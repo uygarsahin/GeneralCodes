@@ -1,1 +1,1 @@
-Bu kisimda paylasacagim kodlar sadece fikir verme amaiyladir.
+Bu kisimda paylasacagim kodlar sadece fikir verme amaciyladir.
