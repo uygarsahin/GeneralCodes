@@ -1,0 +1,120 @@
+---
+# ============================================================
+# HMC | Delete Policy (Unified – Provider Result Driven)
+#
+# not_found_in_console  → skip
+# powered_on            → fail (must poweroff first)
+# powered_off           → delete LPAR → Verify →  still exist → fail
+# powered_off           → delete LPAR → status=deleted
+# console_error         → fail
+# unknown               → fail
+#
+# Input  : provider_result (from status.yml)
+# Output : provider_result (final)
+# ============================================================
+
+# ------------------------------------------------------------
+# Guard
+# ------------------------------------------------------------
+- name: HMC | Delete | Guard | provider_result must exist
+  ansible.builtin.fail:
+    msg: "provider_result is missing - status.yml must be executed before delete.yml"
+  when: provider_result  is not defined
+
+# ------------------------------------------------------------
+# Guard | Invalid states
+# ------------------------------------------------------------
+- name: HMC | Delete | Guard | Unknown or console error
+  ansible.builtin.fail:
+    msg: "Delete aborted due to invalid status: {{ provider_result.status }}"
+  when: provider_result.status | trim not in
+        ['powered_off', 'powered_on', 'not_found_in_console']
+
+# ------------------------------------------------------------
+# 1) Skip if LPAR not found
+# ------------------------------------------------------------
+- name: HMC | Delete | Skip if LPAR not found
+  ansible.builtin.meta: end_host
+  when: provider_result.status | trim == "not_found_in_console"
+
+# ------------------------------------------------------------
+# 2) Fail if LPAR is still powered on
+# ------------------------------------------------------------
+- name: HMC | Delete | Mark delete skipped (powered_on)
+  ansible.builtin.set_fact:
+    provider_result:
+      host: "{{ inventory_hostname }}"
+      provider: "hmc"
+      operation: "delete"
+      vm_name: "{{ provider_result.vm_name }}"
+      status: "powered_on"
+      message: "Delete skipped - server still powered on."
+  when: provider_result.status | trim == "powered_on"
+
+- name: HMC | Delete | Fail | LPAR is powered on
+  ansible.builtin.meta: end_host
+  when: provider_result.status | trim == "powered_on"
+
+# ------------------------------------------------------------
+# 3) Delete powered-off LPAR
+# ------------------------------------------------------------
+- name: HMC | Delete | Remove LPAR
+  ibm.power_hmc.powervm_lpar_instance:
+    hmc_host: "{{ hmc_infra.console }}"
+    hmc_auth:
+      username: "{{ hmc_user }}"
+      password: "{{ hmc_password }}"
+    system_name: "{{ hmc_infra.extra }}"
+    vm_name: "{{ provider_result.vm_name }}"
+    retain_vios_cfg: false
+    delete_vdisks: true
+    state: absent
+  delegate_to: localhost
+  when: provider_result.status | trim == "powered_off"
+
+# ------------------------------------------------------------
+# 4) Verify deletion
+# ------------------------------------------------------------
+- name: HMC | Delete | Verify LPAR is removed
+  ibm.power_hmc.powervm_lpar_instance:
+    hmc_host: "{{ hmc_infra.console }}"
+    hmc_auth:
+      username: "{{ hmc_user }}"
+      password: "{{ hmc_password }}"
+    system_name: "{{ hmc_infra.extra }}"
+    vm_name: "{{ provider_result.vm_name }}"
+    state: facts
+  register: hmc_lpar_after_delete
+  delegate_to: localhost
+  retries: 10
+  delay: 5
+  until: hmc_lpar_after_delete.partition_info is not defined
+  changed_when: false
+  failed_when: false
+  when: provider_result.status | trim == "powered_off"
+
+# ------------------------------------------------------------
+# 5) Fail if still exists
+# ------------------------------------------------------------
+- name: HMC | Delete | Fail if LPAR still exists
+  ansible.builtin.fail:
+    msg: "{{ '%-20s : delete_failed (still exists on HMC)' | format(provider_result.vm_name) }}"
+  when:
+    - provider_result.status | trim == "powered_off"
+    - hmc_lpar_after_delete.partition_info is defined
+
+# ------------------------------------------------------------
+# 6) Update provider_result after successful delete
+# ------------------------------------------------------------
+- name: HMC | Delete | Update provider_result
+  ansible.builtin.set_fact:
+    provider_result:
+      host: "{{ inventory_hostname }}"
+      provider: "hmc"
+      operation: "delete"
+      vm_name: "{{ provider_result.vm_name }}"
+      status: "deleted"
+      message: "LPAR successfully deleted from HMC."
+  when:
+    - provider_result.status | trim == "powered_off"
+    - hmc_lpar_after_delete.partition_info is not defined

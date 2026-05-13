@@ -1,0 +1,193 @@
+---
+# ============================================================
+# Poweroff Policy (Unified – Provider Result Driven)
+#
+# not_found_in_console  → skip
+# powered_off           → rename
+# powered_on            → shutdown + wait + rename
+# console_error         → fail / stop
+# unknown               → stop
+#
+# Input  : provider_result (from status.yml)
+# Output : provider_result (final)
+# ============================================================
+
+# ------------------------------------------------------------
+# Guard
+# ------------------------------------------------------------
+- name: OCP| Poweroff | Guard | provider_result must exist
+  ansible.builtin.fail:
+    msg: "provider_result is missing - status.yml must be executed before poweroff.yml"
+  when: provider_result is not defined
+
+# ------------------------------------------------------------
+#  1) Skip if OCP VM not found in Console
+# ------------------------------------------------------------
+
+- name: OCP | Poweroff | Skip if VM not found
+  ansible.builtin.meta: end_host
+  when: provider_result.status == "not_found_in_console"
+
+# ------------------------------------------------------------
+#  2) OCP VM is Already powered off skipp to labele
+# ------------------------------------------------------------
+
+- name: OCP | Poweroff | Already stopped → rename
+  ansible.builtin.include_tasks: rename.yml
+  vars:
+    rename_reason: "already_powered_off"
+  when: provider_result.status == "powered_off"
+
+- name: OCP | Poweroff | Stop processing host (already powered off)
+  ansible.builtin.meta: end_host
+  when: provider_result.status == "powered_off"
+
+# ------------------------------------------------------------
+#  3) Find OCP strategy (MUST be powered_on)
+# ------------------------------------------------------------
+
+#3.1) Get OCP VM information
+- name: OCP | Poweroff | Get VM definition
+  kubernetes.core.k8s_info:
+    host: "{{ ocp_api_url }}"
+    api_key: "{{ ocp_token_norm }}"
+    validate_certs: "{{ ocp_validate_certs | default(false) }}"
+    api_version: kubevirt.io/v1
+    kind: VirtualMachine
+    namespace: "{{ infra.extra }}"
+    name: "{{ provider_result.vm_name }}"
+  register: ocp_po_vm
+  when: provider_result.status == "powered_on"
+
+#3.2 ) check Running strategy
+- name: OCP | Poweroff | Detect runStrategy
+  ansible.builtin.set_fact:
+    ocp_po_vm_has_runstrategy: >-
+      {{ ocp_po_vm.resources | length > 0
+         and ocp_po_vm.resources[0].spec.runStrategy is defined }}
+  when: provider_result.status == "powered_on"
+
+# ------------------------------------------------------------
+# 4) Power off OCP VM : Powered on → Power off 
+# ------------------------------------------------------------
+
+#4.1) RunStrategy is exist on VM
+
+- name: OCP | Poweroff | Shutdown via runStrategy
+  kubernetes.core.k8s:
+    host: "{{ ocp_api_url }}"
+    api_key: "{{ ocp_token_norm }}"
+    validate_certs: "{{ ocp_validate_certs | default(false) }}"
+    api_version: kubevirt.io/v1
+    kind: VirtualMachine
+    namespace: "{{ infra.extra }}"
+    name: "{{ provider_result.vm_name }}"
+    definition:
+      spec:
+        runStrategy: Halted
+  when:
+    - provider_result.status == "powered_on"
+    - ocp_po_vm_has_runstrategy
+
+#4.2) RunStrategy is NOT exist on OCP VM (Legacy)
+
+- name: OCP | Poweroff | Shutdown via running=false (legacy)
+  kubernetes.core.k8s:
+    host: "{{ ocp_api_url }}"
+    api_key: "{{ ocp_token_norm }}"
+    validate_certs: "{{ ocp_validate_certs | default(false) }}"
+    api_version: kubevirt.io/v1
+    kind: VirtualMachine
+    namespace: "{{ infra.extra }}"
+    name: "{{ provider_result.vm_name }}"
+    definition:
+      spec:
+        running: false
+  when:
+    - provider_result.status == "powered_on"
+    - not ocp_po_vm_has_runstrategy
+
+# ------------------------------------------------------------
+# 5) Wait until VM is stopped
+# ------------------------------------------------------------
+- name: OCP | Poweroff | Wait until VM stopped
+  kubernetes.core.k8s_info:
+    host: "{{ ocp_api_url }}"
+    api_key: "{{ ocp_token_norm }}"
+    validate_certs: "{{ ocp_validate_certs | default(false) }}"
+    api_version: kubevirt.io/v1
+    kind: VirtualMachine
+    namespace: "{{ infra.extra }}"
+    name: "{{ provider_result.vm_name }}"
+  register: ocp_po_vm_wait
+  until: >-
+    ocp_po_vm_wait.resources | length > 0 and
+    ocp_po_vm_wait.resources[0].status.printableStatus | lower == 'stopped'
+  retries: 60
+  delay: 5
+  failed_when: false
+  changed_when: false
+  when: provider_result.status == "powered_on"
+
+# ------------------------------------------------------------
+# 6) Set OCP VM Status of power off result
+# ------------------------------------------------------------
+
+#6.1) Set shutdown succcess
+- name: OCP | Poweroff | Set shutdown result
+  ansible.builtin.set_fact:
+    ocp_shutdown_success: >-
+      {{
+        (ocp_po_vm_wait.resources | default([]) | length) > 0 and
+        (ocp_po_vm_wait.resources[0].status.printableStatus
+           | default('n/a') | lower) == 'stopped'
+      }}
+  when: provider_result.status == "powered_on"
+
+#6.2) Update provider_result.status == powered_off after successful shutdown
+
+- name: OCP | Poweroff | Update provider_result to powered_off
+  ansible.builtin.set_fact:
+    provider_result:
+      host: "{{ inventory_hostname }}"
+      provider: "ocp"
+      operation: "poweroff"
+      vm_name: "{{ provider_result.vm_name }}"
+      status: "powered_off"
+      message: "VM successfully shut down."
+  when:
+    - provider_result.status == "powered_on"
+    - ocp_shutdown_success | default(false)
+
+# ------------------------------------------------------------
+# 7) Set  OCP VM status if power off is failed
+# ------------------------------------------------------------
+
+- name: OCP | Poweroff | Shutdown failed
+  ansible.builtin.set_fact:
+    provider_result:
+      host: "{{ inventory_hostname }}"
+      provider: "ocp"
+      operation: "poweroff"
+      vm_name: "{{ provider_result.vm_name }}"
+      status: "powered_off_failed"
+      message: "VM '{{ provider_result.vm_name }}' could not be shut down."
+  when:
+    - provider_result.status == "powered_on"
+    - not ocp_shutdown_success | default(false)
+
+- name: OCP | Poweroff | Stop host after shutdown failure
+  ansible.builtin.meta: end_host
+  when:
+    - provider_result.status == "powered_off_failed"
+
+# ------------------------------------------------------------
+# 8) Rename (labele) after successful power off
+# ------------------------------------------------------------
+
+- name: OCP | Poweroff | Rename after shutdown
+  ansible.builtin.include_tasks: rename.yml
+  vars:
+    rename_reason: "shutdown_performed"
+  when:
+    - provider_result.status == "powered_off"

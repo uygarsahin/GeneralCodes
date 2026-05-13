@@ -1,0 +1,23 @@
+---
+- name: DB Lookup | Start
+  ansible.builtin.debug:
+    msg: "Looking up infra for host '{{ inventory_hostname }}'"
+
+- name: DB Lookup  | Include query logic
+  ansible.builtin.include_tasks: query.yml
+
+- name: DB Lookup | Debug infra (optional)
+  ansible.builtin.debug:
+    var: db_lookup_infra
+  when: db_lookup_infra_found | default(false) | bool
+
+- name: DB Lookup | Build provider_result
+  ansible.builtin.set_fact:
+    provider_result:
+      host: "{{ inventory_hostname }}"
+      provider: "db_lookup"
+      operation: "{{ operation | default('status') }}"
+      vm_name: "{{ inventory_hostname }}"
+      status: "not_found_in_DB"
+      message: 'Server "{{ inventory_hostname | trim }}" cannot be found in the database and must be investigate manually'
+  when: not (db_lookup_infra_found | default(false) | bool)

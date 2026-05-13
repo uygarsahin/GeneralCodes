@@ -1,0 +1,130 @@
+---
+# 0) Capture the status result from the status role before we overwrite provider_result
+- name: Physical | Poweroff | Capture status result
+  ansible.builtin.set_fact:
+    physical_status_result: "{{ provider_result }}"
+
+# 1) Don't do anything if server doesn't exist in console
+- name: Physical | Poweroff | Skip if not found
+  ansible.builtin.set_fact:
+    provider_result:
+      host: "{{ inventory_hostname }}"
+      provider: "physical"
+      operation: "poweroff"
+      vm_name: "{{ physical_status_result.vm_name }}"
+      status: "not_found"
+      message: "{{ physical_status_result.message }}"
+  when: physical_status_result.status | default('') | trim | lower == "not_found_in_console"
+
+# 1b) Don't do anything if there was a console error in status
+- name: Physical | Poweroff | Skip on console error
+  ansible.builtin.set_fact:
+    provider_result:
+      host: "{{ inventory_hostname }}"
+      provider: "physical"
+      operation: "poweroff"
+      vm_name: "{{ physical_status_result.vm_name }}"
+      status: "console_error"
+      message: "{{ physical_status_result.message }}"
+  when: physical_status_result.status | default('') | trim | lower == "console_error"
+
+# 2) Skip if already powered off (or not clearly powered on)
+- name: Physical | Poweroff | Skip if already powered off
+  ansible.builtin.set_fact:
+    provider_result:
+      host: "{{ inventory_hostname }}"
+      provider: "physical"
+      operation: "poweroff"
+      vm_name: "{{ physical_status_result.vm_name }}"
+      status: "already_powered_off"
+      message: "Server '{{ physical_status_result.vm_name }}' already powered off on iDRAC '{{ infra.console }}'."
+  when: physical_status_result.status | default('') | trim | lower in ["powered_off", "unknown"]
+
+# 3) Pull Hashi token (needed if we do a shutdown)
+- name: Pull Hashi token from env (optional style)
+  ansible.builtin.set_fact:
+    hashi_token: "{{ lookup('env', 'HASHI_TOKEN') }}"
+  no_log: true
+
+# 4) Get Redfish Systems collection (only if we plan to power off)
+- name: Physical | Poweroff | Get Redfish Systems collection
+  ansible.builtin.uri:
+    url: "https://{{ infra.console }}/redfish/v1/Systems"
+    method: GET
+    user: "SI_NAM_226014_P_AAP@nam.corp.gm.com"
+    password: "{{ hashi_token }}"
+    force_basic_auth: yes
+    validate_certs: false
+    return_content: yes
+    status_code: 200
+    use_proxy: false
+  register: physical_poweroff_systems
+  delegate_to: localhost
+  when: physical_status_result.status | default('') | trim | lower == "powered_on"
+
+- name: Physical | Poweroff | Pick first system member URI
+  ansible.builtin.set_fact:
+    physical_poweroff_system_uri: "{{ physical_poweroff_systems.json.Members[0]['@odata.id'] | default('') }}"
+  when: physical_status_result.status | default('') | trim | lower == "powered_on"
+
+- name: Physical | Poweroff | Fail if no system URI found
+  ansible.builtin.fail:
+    msg: "No Redfish Systems members returned from {{ infra.console }}"
+  when:
+    - physical_status_result.status | default('') | trim | lower == "powered_on"
+    - physical_poweroff_system_uri == ''
+
+# 5) Request graceful power-off via Redfish
+- name: Physical | Poweroff | Request graceful shutdown
+  ansible.builtin.uri:
+    url: "https://{{ infra.console }}{{ physical_poweroff_system_uri }}/Actions/ComputerSystem.Reset"
+    method: POST
+    user: "SI_NAM_226014_P_AAP@nam.corp.gm.com"
+    password: "{{ hashi_token }}"
+    force_basic_auth: yes
+    validate_certs: false
+    body_format: json
+    body:
+      ResetType: GracefulShutdown
+    status_code: [200, 202, 204]
+    use_proxy: false
+  register: physical_poweroff_result
+  delegate_to: localhost
+  when: physical_status_result.status | default('') | trim | lower == "powered_on"
+
+# 6) Ensure server is actually powered off (5s x 60 retries)
+- name: Physical | Poweroff | Ensure server is powered off
+  ansible.builtin.uri:
+    url: "https://{{ infra.console }}{{ physical_poweroff_system_uri }}"
+    method: GET
+    user: "SI_NAM_226014_P_AAP@nam.corp.gm.com"
+    password: "{{ hashi_token }}"
+    force_basic_auth: yes
+    validate_certs: false
+    return_content: yes
+    status_code: 200
+    use_proxy: false
+  register: physical_power_check
+  until: (physical_power_check.json.PowerState | default('Unknown') | lower) == "off"
+  retries: 60
+  delay: 5
+  delegate_to: localhost
+  when: physical_status_result.status | default('') | trim | lower == "powered_on"
+
+# Optional: debug final state
+- name: Physical | Poweroff | Debug final PowerState
+  ansible.builtin.debug:
+    msg: "Final PowerState: {{ physical_power_check.json.PowerState | default('Unknown') }}"
+  when: physical_power_check is defined
+
+# 7) Build provider_result, similar to vCenter style, for successful poweroff
+- name: Physical | Poweroff | Build provider_result (powered off)
+  ansible.builtin.set_fact:
+    provider_result:
+      host: "{{ inventory_hostname }}"
+      provider: "physical"
+      operation: "poweroff"
+      vm_name: "{{ physical_status_result.vm_name }}"
+      status: "powered_off"
+      message: "Server '{{ physical_status_result.vm_name }}' successfully powered off via iDRAC '{{ infra.console }}'."
+  when: physical_status_result.status | default('') | trim | lower == "powered_on"

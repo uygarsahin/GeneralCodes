@@ -1,0 +1,56 @@
+---
+# ============================================================
+# Rename Policy (HMC – Provider Result Driven)
+#
+# Preconditions:
+#   provider_result.status == powered_off
+#
+# Effect:
+#   - DO NOT rename LPAR profile name
+#   - ONLY update description to: status:decom
+#
+# Output:
+#   provider_result (updated, final)
+# ============================================================
+
+# ------------------------------------------------------------
+# Guard – this role must only run for powered_off LPARs
+# ------------------------------------------------------------
+- name: HMC | Rename | Guard | Only allowed for powered_off
+  ansible.builtin.meta: end_host
+  when: provider_result.status != "powered_off"
+
+# ------------------------------------------------------------
+# Update LPAR description
+# ------------------------------------------------------------
+- name: HMC | Rename | Set LPAR description to status:decom
+  ibm.power_hmc.hmc_command:
+    hmc_host: "{{ hmc_infra.console }}"
+    hmc_auth:
+      username: "{{ hmc_user }}"
+      password: "{{ hmc_password }}"
+    cmd: >
+      chsyscfg -r lpar
+      -m {{ hmc_infra.extra }}
+      -i "name={{ provider_result.vm_name }},description=status:decom"
+  delegate_to: localhost
+
+# ------------------------------------------------------------
+# Final provider_result (rename result)
+# ------------------------------------------------------------
+- name: HMC | Rename | Build final provider_result
+  ansible.builtin.set_fact:
+    provider_result:
+      host: "{{ inventory_hostname }}"
+      provider: "hmc"
+      operation: "labeled_server"
+      vm_name: "{{ provider_result.vm_name }}"
+      status: "powered_off"
+      message: >-
+        {%- if rename_reason == 'already_powered_off' -%}
+          LPAR '{{ provider_result.vm_name }}' was already powered off and labeled with status:decom.
+        {%- elif rename_reason == 'shutdown_performed' -%}
+          LPAR '{{ provider_result.vm_name }}' was shut down and labeled with status:decom.
+        {%- else -%}
+          LPAR '{{ provider_result.vm_name }}' labeled with status:decom.
+        {%- endif -%}

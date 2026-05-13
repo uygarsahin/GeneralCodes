@@ -1,0 +1,117 @@
+---
+# ============================================================
+# OCP | Delete Policy (Unified – Provider Result Driven)
+#
+# not_found_in_console → skip
+# powered_on           → fail (must poweroff first)
+# powered_off          → delete VM → verify → deleted
+# console_error        → fail
+# unknown              → fail
+#
+# Input  : provider_result (from status.yml)
+# Output : provider_result (final)
+# ============================================================
+
+# ------------------------------------------------------------
+# Guard
+# ------------------------------------------------------------
+- name: OCP | Delete | Guard | provider_result must exist
+  ansible.builtin.fail:
+    msg: "provider_result is missing - status.yml must be executed before delete.yml"
+  when: provider_result is not defined
+
+# ------------------------------------------------------------
+# Guard | Invalid states
+# ------------------------------------------------------------
+- name: OCP | Delete | Guard | Invalid delete state
+  ansible.builtin.fail:
+    msg: "Delete aborted due to invalid status: {{ provider_result.status }}"
+  when: provider_result.status not in
+        ['powered_off', 'powered_on', 'not_found_in_console']
+
+# ------------------------------------------------------------
+# 1) Skip if VM not found
+# ------------------------------------------------------------
+- name: OCP | Delete | Skip if VM not found
+  ansible.builtin.meta: end_host
+  when: provider_result.status == "not_found_in_console"
+
+# ------------------------------------------------------------
+# 2) Fail if VM is still powered on
+# ------------------------------------------------------------
+- name: OCP | Delete | Mark delete skipped (powered_on)
+  ansible.builtin.set_fact:
+    provider_result:
+      host: "{{ inventory_hostname }}"
+      provider: "ocp"
+      operation: "delete"
+      vm_name: "{{ provider_result.vm_name }}"
+      status: "powered_on"
+      message: "Delete skipped - VM is still powered on."
+  when: provider_result.status == "powered_on"
+
+- name: OCP | Delete | Stop delete (powered_on)
+  ansible.builtin.meta: end_host
+  when: provider_result.status == "powered_on"
+
+# ------------------------------------------------------------
+# 3) Delete powered-off VM
+# ------------------------------------------------------------
+- name: OCP | Delete | Delete VM
+  kubernetes.core.k8s:
+    host: "{{ ocp_api_url }}"
+    api_key: "{{ ocp_token_norm }}"
+    validate_certs: "{{ ocp_verify }}"
+    api_version: kubevirt.io/v1
+    kind: VirtualMachine
+    namespace: "{{ infra.extra }}"
+    name: "{{ provider_result.vm_name }}"
+    state: absent
+  delegate_to: localhost
+  when: provider_result.status == "powered_off"
+
+# ------------------------------------------------------------
+# 4) Verify OCP VM deletion (OCP VM must not exist)
+# ------------------------------------------------------------
+- name: OCP | Delete | Verify VM is deleted
+  kubernetes.core.k8s_info:
+    host: "{{ ocp_api_url }}"
+    api_key: "{{ ocp_token_norm }}"
+    validate_certs: "{{ ocp_verify }}"
+    api_version: kubevirt.io/v1
+    kind: VirtualMachine
+    namespace: "{{ infra.extra }}"
+    name: "{{ provider_result.vm_name }}"
+  register: ocp_vm_after_delete
+  retries: 10
+  delay: 5
+  until: ocp_vm_after_delete.resources | length == 0
+  failed_when: false
+  changed_when: false
+  when: provider_result.status == "powered_off"
+
+# ------------------------------------------------------------
+# 5) Fail if still exists
+# ------------------------------------------------------------
+- name: OCP | Delete | Fail if VM still exists
+  ansible.builtin.fail:
+    msg: "{{ '%-20s : delete_failed (still exists on OCP)' | format(provider_result.vm_name) }}"
+  when:
+    - provider_result.status == "powered_off"
+    - ocp_vm_after_delete.resources | length > 0
+
+# ------------------------------------------------------------
+# 6) Update provider_result after successful delete
+# ------------------------------------------------------------
+- name: OCP | Delete | Update provider_result
+  ansible.builtin.set_fact:
+    provider_result:
+      host: "{{ inventory_hostname }}"
+      provider: "ocp"
+      operation: "delete"
+      vm_name: "{{ provider_result.vm_name }}"
+      status: "deleted"
+      message: "VM successfully deleted from OCP."
+  when:
+    - provider_result.status == "powered_off"
+    - ocp_vm_after_delete.resources | length == 0

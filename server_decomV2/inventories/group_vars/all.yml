@@ -1,0 +1,55 @@
+# ----- HMC -----
+hmc_user: "hscroot"
+hmc_password: ""
+
+# ----- iDRAC / iLO ----
+idrac_username: ""
+idrac_password: ""
+
+# ----- vCenter -----
+vcenter_username: ""
+vcenter_password: "" 
+
+# ----- OCP -----
+ocp_username: ""
+ocp_password: ""      
+
+# ----- SSH -----
+ssh_username: ""
+ssh_non_password: "" #non prod
+ssh_password: ""  #prod
+
+# ---- Ansible default ------
+ansible_user: ""
+ansible_password: ""  #Prod
+#ansible_password: "" Non prod
+#ansible_user: "hscroot"
+#ansible_password: ""
+
+# --- Database access ---
+dbname: ""
+dbhost: ""
+dbport: 5432
+dbuser: ""
+dbpassword: ""
+dbtable: ""
+
+
+# Default environment for local runs
+aap_environment: local
+
+pg_database:
+  local:
+    pg_user: ""
+    pg_password: ""
+    pg_db: ""
+    pg_host: ""
+    pg_table: ""
+    pg_port: 5432
+
+# Redfish ayarları
+redfish_secure: true
+redfish_timeout: 30
+
+# Dry-run broken machine riskini azaltmak için
+physical_force_poweroff: true

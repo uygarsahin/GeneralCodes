@@ -1,0 +1,29 @@
+---
+- name: DB Lookup | Normalize input hostname
+  ansible.builtin.set_fact:
+    db_lookup_name_norm: "{{ (inventory_hostname | lower) | regex_replace(db_lookup_hostname_normalize_regex, '') }}"
+    
+
+- name: DB Lookup | Run DB query (safe)
+  community.postgresql.postgresql_query:
+    login_db: "{{ dbname }}"
+    login_host: "{{ dbhost }}"
+    login_port: "{{ dbport }}"
+    login_user: "{{ dbuser }}"
+    login_password: "{{ dbpassword }}"
+    query: "{{ lookup('template', 'lookup.sql.j2') }}"
+    named_args:
+      name: "{{ db_lookup_name_norm }}"
+    trust_input: false
+  register: db_lookup_query
+  changed_when: false
+
+- name: DB Lookup | Build infra object (if found)
+  ansible.builtin.set_fact:
+    db_lookup_infra_found: "{{ (db_lookup_query.query_result | default([]) | length) > 0 }}"
+    db_lookup_infra: >-
+      {{
+        (db_lookup_query.query_result[0] | default({})) | combine({
+          'name': db_lookup_name_norm
+        })
+      }}

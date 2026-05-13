@@ -1,0 +1,12 @@
+---
+- name: HMC | Status
+  ansible.builtin.include_tasks: status.yml
+
+- name: HMC | Dispatch operation
+  ansible.builtin.include_tasks: "{{ item }}"
+  when: hmc_operation == item.split('.')[0]
+  loop:
+    - poweroff.yml
+#    - rename.yml
+    - poweron.yml
+    - delete.yml

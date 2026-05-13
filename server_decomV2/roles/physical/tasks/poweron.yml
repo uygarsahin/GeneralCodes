@@ -1,0 +1,126 @@
+---
+# 0) Capture the status result from the status role before we overwrite provider_result
+- name: Physical | Poweron | Capture status result
+  ansible.builtin.set_fact:
+    physical_status_result: "{{ provider_result }}"
+
+# 1) Don't do anything if server doesn't exist in console
+- name: Physical | Poweron | Skip if not found in console
+  ansible.builtin.set_fact:
+    provider_result:
+      host: "{{ inventory_hostname }}"
+      provider: "physical"
+      operation: "poweron"
+      vm_name: "{{ physical_status_result.vm_name }}"
+      status: "not_found"
+      message: "{{ physical_status_result.message }}"
+  when: physical_status_result.status | default('') | trim | lower == "not_found_in_console"
+
+# 1b) Don't do anything if there was a console error in status
+- name: Physical | Poweron | Skip on console error
+  ansible.builtin.set_fact:
+    provider_result:
+      host: "{{ inventory_hostname }}"
+      provider: "physical"
+      operation: "poweron"
+      vm_name: "{{ physical_status_result.vm_name }}"
+      status: "console_error"
+      message: "{{ physical_status_result.message }}"
+  when: physical_status_result.status | default('') | trim | lower == "console_error"
+
+# 2) Skip if already powered on
+- name: Physical | Poweron | Skip if already powered on
+  ansible.builtin.set_fact:
+    provider_result:
+      host: "{{ inventory_hostname }}"
+      provider: "physical"
+      operation: "poweron"
+      vm_name: "{{ physical_status_result.vm_name }}"
+      status: "already_powered_on"
+      message: "Server '{{ physical_status_result.vm_name }}' already powered on on iDRAC '{{ infra.console }}'."
+  when: physical_status_result.status | default('') | trim | lower == "powered_on"
+
+# 3) Build system URI from status facts (physical_moid set by status role)
+- name: Physical | Poweron | Build system URI from status facts
+  ansible.builtin.set_fact:
+    physical_poweron_system_uri: "/redfish/v1/Systems/{{ physical_moid }}"
+  when: physical_status_result.status | default('') | trim | lower == "powered_off"
+
+- name: Physical | Poweron | Fail if no system Id (moid) from status
+  ansible.builtin.fail:
+    msg: >-
+      No system Id (moid) (physical_moid) for '{{ physical_status_result.vm_name }}'
+      on iDRAC '{{ infra.console }}'; cannot power on.
+  when:
+    - physical_status_result.status | default('') | trim | lower == "powered_off"
+    - (physical_moid | default('')) == ''
+
+# 3b) Pull Hashi token
+- name: Pull Hashi token from env (optional style)
+  ansible.builtin.set_fact:
+    hashi_token: "{{ lookup('env', 'HASHI_TOKEN') }}"
+  no_log: true
+
+# 4) Request power-on via Redfish (POST FIRST)
+- name: Physical | Poweron | Request power on
+  ansible.builtin.uri:
+    url: "https://{{ infra.console }}{{ physical_poweron_system_uri }}/Actions/ComputerSystem.Reset"
+    method: POST
+    user: "SI_NAM_226014_P_AAP@nam.corp.gm.com"
+    password: "{{ hashi_token }}"
+    force_basic_auth: yes
+    validate_certs: false
+    body_format: json
+    body:
+      ResetType: "On"
+    status_code: [200, 202, 204]
+    use_proxy: false
+  register: physical_poweron_result
+  delegate_to: localhost
+  when: physical_status_result.status | default('') | trim | lower == "powered_off"
+
+- name: Physical | Poweron | Debug reset result
+  ansible.builtin.debug:
+    var: physical_poweron_result
+  when: physical_poweron_result is defined
+
+# (Optional) Debug the captured status result
+- name: Physical | Poweron | Debug status result
+  ansible.builtin.debug:
+    var: physical_status_result
+  when: physical_status_result is defined
+
+# 5) Ensure server is actually powered on (poll AFTER POST)
+- name: Physical | Poweron | Ensure server is powered on
+  ansible.builtin.uri:
+    url: "https://{{ infra.console }}{{ physical_poweron_system_uri }}"
+    method: GET
+    user: "SI_NAM_226014_P_AAP@nam.corp.gm.com"
+    password: "{{ hashi_token }}"
+    validate_certs: false
+    return_content: yes
+    status_code: 200
+    use_proxy: false
+  register: physical_poweron_check
+  until: (physical_poweron_check.json.PowerState | default('Unknown') | lower) == "on"
+  retries: 60
+  delay: 5
+  delegate_to: localhost
+  when: physical_status_result.status | default('') | trim | lower == "powered_off"
+
+- name: Physical | Poweron | Debug final PowerState
+  ansible.builtin.debug:
+    msg: "Final PowerState: {{ physical_poweron_check.json.PowerState | default('Unknown') }}"
+  when: physical_poweron_check is defined
+
+# 6) Build provider_result, similar style, for successful poweron
+- name: Physical | Poweron | Build provider_result (powered on)
+  ansible.builtin.set_fact:
+    provider_result:
+      host: "{{ inventory_hostname }}"
+      provider: "physical"
+      operation: "poweron"
+      vm_name: "{{ physical_status_result.vm_name }}"
+      status: "powered_on"
+      message: "Server '{{ physical_status_result.vm_name }}' successfully powered on via iDRAC '{{ infra.console }}'."
+  when: physical_status_result.status | default('') | trim | lower == "powered_off"

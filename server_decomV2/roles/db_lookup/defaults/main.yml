@@ -1,0 +1,4 @@
+# roles/db_lookup/defaults/main.yml
+---
+db_lookup_hostname_normalize_regex: "\\..*$"
+db_lookup_osv_schema: "osv"

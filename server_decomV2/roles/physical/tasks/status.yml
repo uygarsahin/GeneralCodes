@@ -1,0 +1,189 @@
+---
+- name: physical | Status | Defaults
+  ansible.builtin.set_fact:
+    physical_verify: "{{ physical_validate_certs | default(false) }}"
+    physical_server_name: "{{ infra.name }}"
+    physical_console: "{{ infra.console }}"
+    physical_status_msg: "n/a"
+    physical_server_found: false
+    physical_server_power: "n/a"
+    physical_moid: "n/a"
+
+- name: physical | Status | Show console
+  ansible.builtin.debug:
+    msg: "Console: {{ physical_console }}"
+
+# roles/my_role/tasks/main.yml
+- name: Pull Hashi token from env (optional style)
+  ansible.builtin.set_fact:
+    hashi_token: "{{ lookup('env', 'HASHI_TOKEN') }}"
+  no_log: true
+
+- name: physical | Status | Query Systems collection
+  ansible.builtin.uri:
+    url: "https://{{ physical_console }}/redfish/v1/Systems"
+    method: GET
+    user: "SI_NAM_226014_P_AAP@nam.corp.gm.com"
+    password: "{{ hashi_token }}"
+    force_basic_auth: yes
+    validate_certs: "{{ physical_verify }}"
+    return_content: yes
+    status_code: 200
+    use_proxy: false
+  register: physical_server_info
+  failed_when: false
+  changed_when: false
+  delegate_to: localhost
+
+- name: physical | Status | Debug full physical_server_info
+  ansible.builtin.debug:
+    var: physical_server_info
+
+# ---------------------------------------------------------------------------
+# Handle 401 unauthorized to Redfish (console_error + end_host)
+# ---------------------------------------------------------------------------
+
+- name: physical | Status | Handle 401 unauthorized to Redfish
+  ansible.builtin.set_fact:
+    physical_server_found: false
+    physical_server_power: "console_error"
+    physical_moid: "n/a"
+    physical_status_msg: >-
+      Unauthorized (401) accessing Redfish /redfish/v1/Systems on iDRAC '{{ physical_console }}'.
+    provider_result:
+      host: "{{ inventory_hostname }}"
+      provider: "physical"
+      operation: "status"
+      vm_name: "{{ physical_server_name }}"
+      status: "console_error"
+      message: "{{ physical_status_msg }}"
+  when: physical_server_info.status | default(0) == 401
+
+- name: physical | Status | End host on unauthorized
+  ansible.builtin.meta: end_host
+  when: physical_server_info.status | default(0) == 401
+
+# ---------------------------------------------------------------------------
+# Derive generic query error for other HTTP failures
+# ---------------------------------------------------------------------------
+
+- name: physical | Status | Derive query error (non-200, non-401)
+  ansible.builtin.set_fact:
+    physical_query_error: >-
+      {% if physical_server_info.status is defined
+            and (physical_server_info.status | int) not in [0, 200, 401] %}
+        HTTP {{ physical_server_info.status }} calling Redfish /redfish/v1/Systems on iDRAC '{{ physical_console }}'
+      {% else %}
+        ''
+      {% endif %}
+  when: physical_server_info.status is defined
+
+# ---------------------------------------------------------------------------
+# Pick the system URI (first member) if present
+# ---------------------------------------------------------------------------
+
+- name: physical | Status | Debug Redfish Members
+  ansible.builtin.debug:
+    var: physical_server_info.json.Members
+
+- name: physical | Status | Pick first system member URI
+  ansible.builtin.set_fact:
+    system_uri: >-
+      {{
+        (physical_server_info.json.Members | default([]))[0]['@odata.id']
+        | default('')
+      }}
+
+- name: physical | Status | Debug picked system_uri
+  ansible.builtin.debug:
+    var: system_uri
+
+# ---------------------------------------------------------------------------
+# Query that system resource (if we have a URI)
+# ---------------------------------------------------------------------------
+
+- name: physical | Status | Query that system resource
+  ansible.builtin.uri:
+    url: "https://{{ physical_console }}{{ system_uri }}"
+    method: GET
+    user: "SI_NAM_226014_P_AAP@nam.corp.gm.com"
+    password: "{{ hashi_token }}"
+    force_basic_auth: yes
+    validate_certs: "{{ physical_verify }}"
+    return_content: yes
+    status_code: 200
+  register: system_info
+  when: system_uri != ''
+
+- name: physical | Status | Debug system_info
+  ansible.builtin.debug:
+    var: system_info
+  when: system_uri != ''
+
+# ---------------------------------------------------------------------------
+# Derive facts
+# ---------------------------------------------------------------------------
+
+- name: physical | Status | Derive facts
+  ansible.builtin.set_fact:
+    physical_server_found: >-
+      {{ system_info is defined and system_info.json is defined }}
+    physical_server_power: >-
+      {%- if system_info is defined and system_info.json is defined and system_info.json.PowerState is defined -%}
+        {%- set ps = system_info.json.PowerState | lower -%}
+        {%- if ps == 'on' -%}
+          poweredon
+        {%- elif ps == 'off' -%}
+          poweredoff
+        {%- else -%}
+          {{ ps }}
+        {%- endif -%}
+      {%- else -%}
+        n/a
+      {%- endif -%}
+    physical_moid: >-
+      {%- if system_info is defined and system_info.json is defined and system_info.json.Id is defined -%}
+        {{ system_info.json.Id }}
+      {%- else -%}
+        n/a
+      {%- endif -%}
+
+- name: physical | Status | Build message
+  ansible.builtin.set_fact:
+    physical_status_msg: >-
+      {%- if not physical_server_found -%}
+        Server '{{ physical_server_name }}' not reachable via iDRAC '{{ physical_console }}'.
+      {%- elif physical_server_power == 'poweredoff' -%}
+        Server '{{ physical_server_name }}' is powered off.
+      {%- elif physical_server_power == 'poweredon' -%}
+        Server '{{ physical_server_name }}' is powered on.
+      {%- else -%}
+        Server '{{ physical_server_name }}' power state: {{ physical_server_power }}
+      {%- endif -%}
+
+# ---------------------------------------------------------------------------
+# Export provider_result (same contract as new vCenter)
+# ---------------------------------------------------------------------------
+
+- name: physical | Status | Build provider_result
+  ansible.builtin.set_fact:
+    provider_result:
+      host: "{{ inventory_hostname }}"
+      provider: "physical"
+      operation: "status"
+      vm_name: "{{ physical_server_name }}"
+      status: >-
+        {% if physical_server_found %}
+          {% if physical_server_power | lower | trim in ['poweredoff', 'powered_off'] %}
+            powered_off
+          {% elif physical_server_power | lower | trim in ['poweredon', 'powered_on'] %}
+            powered_on
+          {% else %}
+            unknown
+          {% endif %}
+        {% elif physical_query_error | default('') | trim != '' %}
+          console_error
+        {% else %}
+          not_found_in_console
+        {% endif %}
+      message: "{{ physical_status_msg }}"

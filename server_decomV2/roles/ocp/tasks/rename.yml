@@ -1,0 +1,70 @@
+---
+# ============================================================
+# Rename Policy (OCP – Provider Result Driven)
+#
+# Preconditions:
+#   provider_result.status == powered_off
+#
+# Effect:
+#   - DO NOT rename OCP VM profile name
+#   - ONLY update label to: status:decom
+#
+# Output:
+#   provider_result (updated, final)
+# ============================================================
+
+# ------------------------------------------------------------
+# Guard 
+# ------------------------------------------------------------
+
+# Guard – provider_result must exist
+- name: OCP | Rename | Guard | provider_result must exist
+  ansible.builtin.fail:
+    msg: "provider_result is missing - status.yml must be executed before rename.yml"
+  when: provider_result is not defined
+
+# Guard - only allowed for powered_off
+- name: OCP | Rename | Guard | Only allowed for powered_off
+  ansible.builtin.meta: end_host
+  when: provider_result.status != "powered_off"
+
+# ------------------------------------------------------------
+# Add status=decom label on OCP VM 
+# ------------------------------------------------------------
+
+- name: OCP | Rename | Mark VM as decom
+  kubernetes.core.k8s:
+    host: "{{ ocp_api_url }}"
+    api_key: "{{ ocp_token_norm  }}"
+    validate_certs: "{{ ocp_verify }}"
+    api_version: kubevirt.io/v1
+    kind: VirtualMachine
+    namespace: "{{ infra.extra }}"
+    name: "{{  provider_result.vm_name }}"
+    state: present
+    definition:
+      metadata:
+        labels:
+          status: "decom"
+
+# ------------------------------------------------------------
+# Final provider_result (rename result)
+# ------------------------------------------------------------
+
+- name: OCP | Rename | Build provider_result
+  ansible.builtin.set_fact:
+    provider_result:
+      host: "{{ inventory_hostname }}"
+      provider: "ocp"
+      operation: "labeled_server"
+      vm_name: "{{ provider_result.vm_name }}"
+      status: "powered_off"
+      message: >-
+        {%- if rename_reason == 'already_powered_off' -%}
+          VM '{{ provider_result.vm_name }}' was already powered off and labeled with status:decom.
+        {%- elif rename_reason == 'shutdown_performed' -%}
+          VM '{{ provider_result.vm_name }}' was shut down and labeled with status:decom
+        {%- else -%}
+          VM '{{ provider_result.vm_name }}' labeled with status:decom.
+        {%- endif -%}
+#  when: provider_result.found

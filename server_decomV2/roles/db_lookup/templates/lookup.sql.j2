@@ -1,0 +1,44 @@
+WITH input_name AS (
+  SELECT TRIM(LOWER(%(name)s)) AS name
+),
+
+-- 1) OpenShift (OSV) — High priority
+openshift AS (
+  SELECT
+
+),
+
+-- 2) VMware (vCenter)
+vmware AS (
+
+),
+
+-- 3) IBM HMC
+hmc AS (
+
+),
+
+-- 4) Physical (iDRAC/iLO)
+physical AS (
+
+),
+
+combined AS (
+  SELECT * FROM openshift
+  UNION ALL SELECT * FROM vmware
+  UNION ALL SELECT * FROM hmc
+  UNION ALL SELECT * FROM physical
+)
+
+-- Priority levels: openshift > vcenter > hmc > physical
+SELECT DISTINCT ON (name) *
+FROM combined
+ORDER BY
+  name,
+  CASE type
+    WHEN 'openshift' THEN 0
+    WHEN 'vcenter'   THEN 1
+    WHEN 'hmc'       THEN 2
+    WHEN 'physical'  THEN 3
+    ELSE 9
+  END;

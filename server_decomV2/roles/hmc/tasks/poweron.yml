@@ -1,0 +1,98 @@
+---
+# ============================================================
+# Poweron Policy (Unified – Provider Result Driven)
+#
+# not_found_in_console  → skip
+# powered_on            → already powered on
+# power_on              → remove label
+# powered_off           → power on + wait
+# console_error         → fail / stop
+# unknown               → stop
+#
+# Input  : provider_result (from status.yml)
+# Output : provider_result (final)
+# ============================================================
+
+# ------------------------------------------------------------
+# Guard
+# ------------------------------------------------------------
+- name: HMC | Guard | provider_result must exist
+  ansible.builtin.fail:
+    msg: "provider_result is missing - status.yml must be executed before powered_on.yml"
+  when: provider_result is not defined
+
+# ------------------------------------------------------------
+# 1) Skip if LPAR not found
+# ------------------------------------------------------------
+- name: HMC | Poweron | Skip if LPAR not found
+  ansible.builtin.meta: end_host
+  when: provider_result.status == "not_found_in_console"
+
+# ------------------------------------------------------------
+# 2) Already powered on → do nothing
+# ------------------------------------------------------------
+- name: HMC | Poweron | Already powered on
+  ansible.builtin.set_fact:
+    provider_result:
+      host: "{{ inventory_hostname }}"
+      provider: "hmc"
+      operation: "poweron"
+      vm_name: "{{ provider_result.vm_name }}"
+      status: "powered_on"
+      message: "LPAR is already powered on."
+  when: provider_result.status == "powered_on"
+
+# ------------------------------------------------------------
+# 3) Cleanup decom labels before power on : Powered off → Power on LPAR
+# ------------------------------------------------------------
+- name: HMC | Poweron | Cleanup decom labels before activation
+  ansible.builtin.include_tasks: cleanup_labels.yml
+  when: provider_result.status == "powered_off"
+
+# ------------------------------------------------------------
+# 4) Power on LPAR : Powered off → Power on
+# ------------------------------------------------------------
+- name: HMC | Poweron | Activate LPAR
+  ibm.power_hmc.powervm_lpar_instance:
+    hmc_host: "{{ hmc_infra.console }}"
+    hmc_auth:
+      username: "{{ hmc_user }}"
+      password: "{{ hmc_password }}"
+    system_name: "{{ hmc_infra.extra }}"
+    vm_name: "{{ provider_result.vm_name }}"
+    action: poweron
+  delegate_to: localhost
+  when: provider_result.status == "powered_off"
+
+# ------------------------------------------------------------
+# 5) Wait until LPAR is powered on
+# ------------------------------------------------------------
+- name: HMC | Poweron | Ensure LPAR is powered on
+  ibm.power_hmc.powervm_lpar_instance:
+    hmc_host: "{{ hmc_infra.console }}"
+    hmc_auth:
+      username: "{{ hmc_user }}"
+      password: "{{ hmc_password }}"
+    system_name: "{{ hmc_infra.extra }}"
+    vm_name: "{{ provider_result.vm_name }}"
+    state: facts
+  register: hmc_power_check
+  until: hmc_power_check.partition_info.PartitionState | lower == "running"
+  retries: 60
+  delay: 5
+  delegate_to: localhost
+  when: provider_result.status == "powered_off"
+
+# ------------------------------------------------------------
+# 6) Update provider_result after successful power on
+# ------------------------------------------------------------
+- name: HMC | Poweron | Update provider_result to powered_on
+  ansible.builtin.set_fact:
+    provider_result:
+      host: "{{ inventory_hostname }}"
+      provider: "hmc"
+      operation: "poweron"
+      vm_name: "{{ provider_result.vm_name }}"
+      status: "powered_on"
+      message: "LPAR successfully powered on."
+  when: provider_result.status == "powered_off"

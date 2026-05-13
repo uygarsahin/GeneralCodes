@@ -1,0 +1,5 @@
+---
+ocp_operation: status
+ocp_validate_certs: false
+ocp_username: "{{ openshift_username }}"
+ocp_password: "{{ openshift_password }}"

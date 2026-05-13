@@ -1,0 +1,39 @@
+---
+# ------------------------------------------------------------
+# HMC | Cleanup | Remove decom label from LPAR description
+# ------------------------------------------------------------
+
+- name: HMC | Cleanup | Get current LPAR description
+  ibm.power_hmc.hmc_command:
+    hmc_host: "{{ hmc_infra.console }}"
+    hmc_auth:
+      username: "{{ hmc_user }}"
+      password: "{{ hmc_password }}"
+    cmd: >
+      lssyscfg -r lpar
+      -m {{ hmc_infra.extra }}
+      -F description
+      --filter "lpar_names={{ provider_result.vm_name }}"
+  register: hmc_lpar_desc
+  delegate_to: localhost
+
+- name: HMC | Cleanup | Normalize description
+  ansible.builtin.set_fact:
+    hmc_current_description: >-
+      {{
+        (hmc_lpar_desc.command_output | default([]) | first | default('')) | trim
+      }}
+
+- name: HMC | Cleanup | Remove status:decom from description
+  ibm.power_hmc.hmc_command:
+    hmc_host: "{{ hmc_infra.console }}"
+    hmc_auth:
+      username: "{{ hmc_user }}"
+      password: "{{ hmc_password }}"
+    cmd: >
+      chsyscfg -r lpar
+      -m {{ hmc_infra.extra }}
+      -i "name={{ provider_result.vm_name }},description="
+  delegate_to: localhost
+  when:
+    - hmc_current_description | regex_search('status:?decom', ignorecase=True)

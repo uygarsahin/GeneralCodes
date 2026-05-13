@@ -1,0 +1,71 @@
+# ============================================================
+#  Cleanup Labels Policy (Vcenter – Provider Result Driven)
+#
+# Preconditions:
+#   provider_result.status == powered_off
+#
+# Effect:
+#   - ONLY remove label : status:decom
+#
+# Output:
+#   provider_result (updated, final)
+# ============================================================
+
+# ------------------------------------------------------------
+# Guard
+# ------------------------------------------------------------
+
+- name: Vcenter | Cleanup | Guard | provider_result must exist
+  ansible.builtin.fail:
+    msg: "provider_result is missing - status.yml must be executed before cleanup_labels.yml"
+  when: provider_result is not defined
+
+- name: Vcenter | Cleanup | Guard | Only allowed for powered_off
+  ansible.builtin.meta: end_host
+  when: provider_result.status | trim != "powered_off"
+
+# ------------------------------------------------------------
+# Get VM info (robust, multi-DC safe)
+# ------------------------------------------------------------
+
+- name: Vcenter | Cleanup | Get VM info (existing annotation)
+  community.vmware.vmware_guest_info:
+    hostname: "{{ vcenter_console }}"
+    username: "{{ vcenter_username }}"
+    password: "{{ vcenter_password }}"
+    validate_certs: "{{ vcenter_validate_certs | default(false) }}"
+    name: "{{ provider_result.vm_name }}"
+    datacenter: "{{ vcenter_datacenter }}"
+  delegate_to: localhost
+  register: vm_info
+
+# ------------------------------------------------------------
+# Remove status:decom (robust, case-insensitive)
+# ------------------------------------------------------------
+
+- name: Vcenter | Cleanup | Build cleaned annotation
+  ansible.builtin.set_fact:
+    cleaned_vm_annotation: |-
+      {{
+        vm_info.instance.annotation
+        | default('')
+        | replace('status:decom\r\n', '')
+        | replace('status:decom\n', '')
+        | replace('status:decom', '')
+        | trim
+      }}
+
+# ------------------------------------------------------------
+# Apply cleaned annotation
+# ------------------------------------------------------------
+
+- name: Vcenter | Cleanup | Apply cleaned annotation
+  community.vmware.vmware_guest:
+    hostname: "{{ vcenter_console }}"
+    username: "{{ vcenter_username }}"
+    password: "{{ vcenter_password }}"
+    validate_certs: "{{ vcenter_validate_certs | default(false) }}"
+    name: "{{ provider_result.vm_name }}"
+    annotation: "{{ cleaned_vm_annotation }}"
+    state: present
+  delegate_to: localhost

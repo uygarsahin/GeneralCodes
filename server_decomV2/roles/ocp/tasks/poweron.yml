@@ -1,0 +1,154 @@
+---
+# ============================================================
+# Poweron Policy (Unified – Provider Result Driven)
+#
+# not_found_in_console → skip
+# powered_on           → already powered on
+# powered_off          → cleanup labels + power on + wait
+# console_error        → fail
+# unknown              → stop
+#
+# Input  : provider_result (from status.yml)
+# Output : provider_result (final)
+# ============================================================
+
+# ------------------------------------------------------------
+# Guard
+# ------------------------------------------------------------
+- name: OCP | Poweron | Guard | provider_result must exist
+  ansible.builtin.fail:
+    msg: "provider_result is missing - status.yml must be executed before poweron.yml"
+  when: provider_result is not defined
+
+# ------------------------------------------------------------
+# 1) Skip if VM not found
+# ------------------------------------------------------------
+- name: OCP | Poweron | Skip if VM not found
+  ansible.builtin.meta: end_host
+  when: provider_result.status == "not_found_in_console"
+
+# ------------------------------------------------------------
+# 2) Already powered on → do nothing
+# ------------------------------------------------------------
+- name: OCP | Poweron | Already powered on
+  ansible.builtin.set_fact:
+    provider_result:
+      host: "{{ inventory_hostname }}"
+      provider: "ocp"
+      operation: "poweron"
+      vm_name: "{{ provider_result.vm_name }}"
+      status: "powered_on"
+      message: "VM is already powered on."
+  when: provider_result.status == "powered_on"
+
+- name: OCP | Poweron | End host (already powered on)
+  ansible.builtin.meta: end_host
+  when: provider_result.status == "powered_on"
+
+# ------------------------------------------------------------
+# 3) Cleanup decom labels before power on : Powered off → Power on OCP VM
+# ------------------------------------------------------------
+- name: OCP | Poweron | Cleanup decom labels before activation
+  ansible.builtin.include_tasks: cleanup_labels.yml
+  when: provider_result.status == "powered_off"
+
+# ------------------------------------------------------------
+# 4) Find OCP strategy (MUST be powered_off)
+# ------------------------------------------------------------
+
+#4.1) Get OCP VM information
+- name: OCP | Poweron | Get VM definition
+  kubernetes.core.k8s_info:
+    host: "{{ ocp_api_url }}"
+    api_key: "{{ ocp_token_norm }}"
+    validate_certs: "{{ ocp_validate_certs | default(false) }}"
+    api_version: kubevirt.io/v1
+    kind: VirtualMachine
+    namespace: "{{ infra.extra }}"
+    name: "{{ provider_result.vm_name }}"
+  register: ocp_po_vm
+  when: provider_result.status == "powered_off"
+
+#4.1 ) check Running strategy
+- name: OCP | Poweron | Detect runStrategy
+  ansible.builtin.set_fact:
+    ocp_po_vm_has_runstrategy: >-
+      {{ ocp_po_vm.resources | length > 0
+         and ocp_po_vm.resources[0].spec.runStrategy is defined }}
+  when: provider_result.status == "powered_off"
+
+# ------------------------------------------------------------
+# 5) Power on VM : Powered off → Power on 
+# ------------------------------------------------------------
+
+#5.1) RunStrategy is exist on VM
+
+- name: OCP | Poweron | Start VM via runStrategy
+  kubernetes.core.k8s:
+    host: "{{ ocp_api_url }}"
+    api_key: "{{ ocp_token_norm }}"
+    validate_certs: "{{ ocp_verify }}"
+    api_version: kubevirt.io/v1
+    kind: VirtualMachine
+    namespace: "{{ infra.extra }}"
+    name: "{{ provider_result.vm_name }}"
+    definition:
+      spec:
+        runStrategy: Always
+  when: 
+    - provider_result.status == "powered_off"
+    - ocp_po_vm_has_runstrategy
+
+#5.2) RunStrategy is NOT exist on OCP VM (Legacy)
+
+- name: OCP | Poweron | Poweron via running=false (legacy)
+  kubernetes.core.k8s:
+    host: "{{ ocp_api_url }}"
+    api_key: "{{ ocp_token_norm }}"
+    validate_certs: "{{ ocp_validate_certs | default(false) }}"
+    api_version: kubevirt.io/v1
+    kind: VirtualMachine
+    namespace: "{{ infra.extra }}"
+    name: "{{ provider_result.vm_name }}"
+    definition:
+      spec:
+        running: true
+  when:
+    - provider_result.status == "powered_off"
+    - not ocp_po_vm_has_runstrategy
+
+# ------------------------------------------------------------
+# 6) Wait until VM is running
+# ------------------------------------------------------------
+- name: OCP | Poweron | Wait until VM is running
+  kubernetes.core.k8s_info:
+    host: "{{ ocp_api_url }}"
+    api_key: "{{ ocp_token_norm }}"
+    validate_certs: "{{ ocp_verify }}"
+    api_version: kubevirt.io/v1
+    kind: VirtualMachine
+    namespace: "{{ infra.extra }}"
+    name: "{{ provider_result.vm_name }}"
+  register: ocp_po_vm_wait
+  until: >-
+    ocp_po_vm_wait.resources | length > 0 and
+    ocp_po_vm_wait.resources[0].status.printableStatus | lower == 'running'
+  retries: 60
+  delay: 5
+  failed_when: false
+  changed_when: false
+  when: provider_result.status == "powered_off"
+
+# ------------------------------------------------------------
+# 7) Update provider_result after successful power on
+# ------------------------------------------------------------
+- name: OCP | Poweron | Update provider_result
+  ansible.builtin.set_fact:
+    provider_result:
+      host: "{{ inventory_hostname }}"
+      provider: "ocp"
+      operation: "poweron"
+      vm_name: "{{ provider_result.vm_name }}"
+      status: "powered_on"
+      message: "VM successfully powered on."
+  when: provider_result.status == "powered_off"

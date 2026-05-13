@@ -1,0 +1,84 @@
+---
+# Status Policy ##
+#LPAR exist → running                → powered_on
+#LPAR exist → not activated          → powered_off
+#LPAR exist → Other status           → unknown
+#
+#LPAR non exist + non exist frame   → frame_not_found
+#LPAR non exist + HMC error         → console_error
+#LPAR non exist + HMC exist         → not_found_in_console
+#
+# Output:
+#   provider_result
+# ============================================================
+
+# ===================== DEFAULTS =====================
+- name: HMC | Status | Defaults
+  ansible.builtin.set_fact:
+    hmc_host: "{{ hmc_infra.console }}"
+    hmc_system: "{{ hmc_infra.extra }}"
+    hmc_lpar: "{{ hmc_infra.name }}"
+    hmc_status_msg: "n/a"
+
+# ===================== QUERY LPAR =====================
+- name: HMC | Status | Query LPAR
+  ibm.power_hmc.powervm_lpar_instance:
+    hmc_host: "{{ hmc_host }}"
+    hmc_auth:
+      username: "{{ hmc_user }}"
+      password: "{{ hmc_password }}"
+    system_name: "{{ hmc_system }}"
+    vm_name: "{{ hmc_lpar }}"
+    state: facts
+  register: hmc_lpar_info
+  failed_when: false
+  changed_when: false
+  delegate_to: localhost
+
+# ===================== DERIVE FACTS =====================
+- name: HMC | Status | Derive facts
+  ansible.builtin.set_fact:
+    hmc_lpar_found: "{{ hmc_lpar_info.partition_info is defined }}"
+    hmc_lpar_power: >-
+      {%- if hmc_lpar_info.partition_info is defined
+            and hmc_lpar_info.partition_info.PartitionState is defined -%}
+        {{ hmc_lpar_info.partition_info.PartitionState | lower }}
+      {%- else -%}
+        unknown
+      {%- endif -%}
+    hmc_query_error: "{{ hmc_lpar_info.msg | default('') }}"
+
+# ===================== EXPORT provider_result =====================
+- name: HMC | Status | Build provider_result
+  ansible.builtin.set_fact:
+    provider_result:
+      host: "{{ inventory_hostname }}"
+      provider: "hmc"
+      operation: "status"
+      vm_name: "{{ hmc_lpar }}"
+#      status: "{{ hmc_lpar_power }}"
+      status: >-
+        {%- if hmc_lpar_found -%}
+          {%- if hmc_lpar_power == 'not activated' -%}
+            powered_off
+          {%- elif hmc_lpar_power == 'running' -%}
+            powered_on
+          {%- else -%}
+            unknown
+          {%- endif -%}
+        {%- elif 'Managed system not found' in hmc_query_error -%}
+          frame_not_found
+        {%- elif hmc_query_error != '' -%}
+          console_error
+        {%- else -%}
+          not_found_in_console
+        {%- endif -%}
+#      message: "{{ hmc_status_msg }}"
+      message:  >-
+        {%- if hmc_lpar_found -%}
+          Power state: {{ hmc_lpar_power }}
+        {%- elif hmc_query_error != '' -%}
+          HMC error: {{ hmc_query_error }}
+        {%- else -%}
+          LPAR not found in managed system
+        {%- endif -%}

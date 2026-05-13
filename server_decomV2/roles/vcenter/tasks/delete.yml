@@ -1,0 +1,116 @@
+---
+# ============================================================
+# Vcenter | Delete Policy (Unified – Provider Result Driven)
+#
+# not_found_in_console → skip
+# powered_on           → fail (must poweroff first)
+# powered_off          → delete VM → verify → deleted
+# console_error        → fail
+# unknown              → fail
+#
+# Input  : provider_result (from status.yml)
+# Output : provider_result (final)
+# ============================================================
+
+# ------------------------------------------------------------
+# Guard
+# ------------------------------------------------------------
+- name: Vcenter | Delete | Guard | provider_result must exist
+  ansible.builtin.fail:
+    msg: "provider_result is missing - status.yml must be executed before delete.yml"
+  when: provider_result is not defined
+
+# ------------------------------------------------------------
+# Guard | Invalid states
+# ------------------------------------------------------------
+- name: Vcenter | Delete | Guard | Invalid delete state
+  ansible.builtin.fail:
+    msg: "Delete aborted due to invalid status: {{ provider_result.status }}"
+  when: provider_result.status | trim not in
+        ['powered_off', 'powered_on', 'not_found_in_console']
+
+# ------------------------------------------------------------
+# 1) Skip if VM not found (idempotent success)
+# ------------------------------------------------------------
+- name: Vcenter | Delete | Skip if VM not found
+  ansible.builtin.meta: end_host
+  when: provider_result.status | trim == "not_found_in_console"
+
+# ------------------------------------------------------------
+# 2) Fail if VM is still powered on
+# ------------------------------------------------------------
+- name: Vcenter | Delete | Mark delete skipped (powered_on)
+  ansible.builtin.set_fact:
+    provider_result:
+      host: "{{ inventory_hostname }}"
+      provider: "vcenter"
+      operation: "delete"
+      vm_name: "{{ provider_result.vm_name }}"
+      status: "powered_on"
+      message: "Delete skipped - VM is still powered on. Power off VM before delete."
+  when: provider_result.status | trim == "powered_on"
+
+- name: Vcenter | Delete | Stop delete (powered_on)
+  ansible.builtin.meta: end_host
+  when: provider_result.status | trim == "powered_on"
+
+# ------------------------------------------------------------
+# 3) Delete powered-off VM
+# ------------------------------------------------------------
+- name: Vcenter | Delete | Delete VM
+  community.vmware.vmware_guest:
+    hostname: "{{ vcenter_console }}"
+    username: "{{ vcenter_username }}"
+    password: "{{ vcenter_password }}"
+    validate_certs: "{{ vcenter_validate_certs | default(false) }}"
+    name: "{{ provider_result.vm_name }}"
+    datacenter: "{{ vcenter_datacenter }}"
+    state: absent
+  delegate_to: localhost
+  when: provider_result.status | trim == "powered_off"
+
+# ------------------------------------------------------------
+# 4) Verify VM deletion
+# ------------------------------------------------------------
+- name: Vcenter | Delete | Verify VM is deleted
+  community.vmware.vmware_guest_info:
+    hostname: "{{ vcenter_console }}"
+    username: "{{ vcenter_username }}"
+    password: "{{ vcenter_password }}"
+    validate_certs: "{{ vcenter_validate_certs | default(false) }}"
+    name: "{{ provider_result.vm_name }}"
+    datacenter: "{{ vcenter_datacenter }}"
+  register: vcenter_vm_after_delete
+  retries: 10
+  delay: 5
+  until: vcenter_vm_after_delete.instance is not defined
+  failed_when: false
+  changed_when: false
+  delegate_to: localhost
+  when: provider_result.status | trim == "powered_off"
+
+# ------------------------------------------------------------
+# 5) Fail if still exists
+# ------------------------------------------------------------
+- name: Vcenter | Delete | Fail if VM still exists
+  ansible.builtin.fail:
+    msg: "{{ '%-20s : delete_failed (still exists on vCenter)' | format(provider_result.vm_name) }}"
+  when:
+    - provider_result.status | trim == "powered_off"
+    - vcenter_vm_after_delete.instance is defined
+
+# ------------------------------------------------------------
+# 6) Update provider_result after successful delete
+# ------------------------------------------------------------
+- name: Vcenter | Delete | Update provider_result
+  ansible.builtin.set_fact:
+    provider_result:
+      host: "{{ inventory_hostname }}"
+      provider: "vcenter"
+      operation: "delete"
+      vm_name: "{{ provider_result.vm_name }}"
+      status: "deleted"
+      message: "VM successfully deleted from vCenter."
+  when:
+    - provider_result.status | trim == "powered_off"
+    - vcenter_vm_after_delete.instance is not defined

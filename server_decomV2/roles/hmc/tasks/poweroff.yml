@@ -1,0 +1,103 @@
+---
+# ============================================================
+# Poweroff Policy (Unified – Provider Result Driven)
+#
+# not_found_in_console  → skip
+# powered_off           → labeled
+# powered_on            → shutdown + wait + labeled
+# console_error         → fail / stop
+# unknown               → stop
+#
+# Input  : provider_result (from status.yml)
+# Output : provider_result (final)
+# ============================================================
+
+# ------------------------------------------------------------
+# Guard
+# ------------------------------------------------------------
+
+- name: HMC | Guard | provider_result must exist
+  ansible.builtin.fail:
+    msg: "provider_result is missing - status.yml must be executed before poweroff.yml"
+  when: provider_result is not defined
+
+# ------------------------------------------------------------
+#  1) Skip if LPAR not found in Console
+# ------------------------------------------------------------
+
+- name: HMC | Poweroff | Skip if LPAR not found
+  ansible.builtin.meta: end_host
+  when: provider_result.status == "not_found_in_console"
+
+# ------------------------------------------------------------
+#  2) LPAR is Already powered off skipp to labele
+# ------------------------------------------------------------
+
+- name: HMC | Poweroff | Already powered off → rename
+  ansible.builtin.include_tasks: rename.yml
+  vars:
+    rename_reason: "already_powered_off"
+  when: provider_result.status == "powered_off"
+
+- name: HMC | Poweroff | Stop processing host (already powered off)
+  ansible.builtin.meta: end_host
+  when: provider_result.status == "powered_off"
+
+# ------------------------------------------------------------
+#  3) LPAR is powered off
+# ------------------------------------------------------------
+
+- name: HMC | Poweroff | Shutdown LPAR
+  ibm.power_hmc.powervm_lpar_instance:
+    hmc_host: "{{ hmc_infra.console }}"
+    hmc_auth:
+      username: "{{ hmc_user }}"
+      password: "{{ hmc_password }}"
+    system_name: "{{ hmc_infra.extra }}"
+    vm_name: "{{ provider_result.vm_name }}"
+    action: shutdown
+    shutdown_option: Immediate
+  delegate_to: localhost
+  when: provider_result.status == "powered_on"
+
+# ------------------------------------------------------------
+#  4) Wait until LPAR is powered off
+# ------------------------------------------------------------
+- name: HMC | Poweroff | Ensure LPAR is powered off
+  ibm.power_hmc.powervm_lpar_instance:
+    hmc_host: "{{ hmc_infra.console }}"
+    hmc_auth:
+      username: "{{ hmc_user }}"
+      password: "{{ hmc_password }}"
+    system_name: "{{ hmc_infra.extra }}"
+    vm_name: "{{ provider_result.vm_name }}"
+    state: facts
+  register: hmc_power_check
+  until: hmc_power_check.partition_info.PartitionState | lower == "not activated"
+  retries: 60
+  delay: 5
+  delegate_to: localhost
+  when: provider_result.status == "powered_on"
+
+# ------------------------------------------------------------
+#  5) Update provider_result after successful shutdown
+# ------------------------------------------------------------
+- name: HMC | Poweroff | Update provider_result to powered_off
+  ansible.builtin.set_fact:
+    provider_result:
+      host: "{{ inventory_hostname }}"
+      provider: "hmc"
+      operation: "poweroff"
+      vm_name: "{{ provider_result.vm_name }}"
+      status: "powered_off"
+      message: "LPAR successfully shut down."
+  when: provider_result.status == "powered_on"
+
+# ------------------------------------------------------------
+# 6) Label after successful shutdown
+# ------------------------------------------------------------
+- name: HMC | Poweroff | Labeled after shutdown
+  ansible.builtin.include_tasks: rename.yml
+  vars:
+    rename_reason: "shutdown_performed"
+  when: provider_result.status == "powered_off"

@@ -1,0 +1,171 @@
+---
+# ============================================================
+# Poweron Policy (Unified – Provider Result Driven)
+#
+# not_found_in_console → skip
+# powered_on           → already powered on
+# powered_off          → cleanup labels + power on + wait
+# console_error        → fail
+# unknown              → stop
+#
+# Input  : provider_result (from status.yml)
+# Output : provider_result (final)
+# ============================================================
+
+# ------------------------------------------------------------
+# Guard
+# ------------------------------------------------------------
+- name: Vcenter | Poweron | Guard | provider_result must exist
+  ansible.builtin.fail:
+    msg: "provider_result is missing - status.yml must be executed before poweron.yml"
+  when: provider_result is not defined
+
+# ------------------------------------------------------------
+# 1) Skip if VM not found
+# ------------------------------------------------------------
+- name: Vcenter | Poweron | Skip if VM not found
+  ansible.builtin.meta: end_host
+  when: provider_result.status | trim == "not_found_in_console"
+
+# ------------------------------------------------------------
+# 2) Already powered on → do nothing
+# ------------------------------------------------------------
+- name: Vcenter | Poweron | Already powered on
+  ansible.builtin.set_fact:
+    provider_result:
+      host: "{{ inventory_hostname }}"
+      provider: "vcenter"
+      operation: "poweron"
+      vm_name: "{{ provider_result.vm_name }}"
+      status: "powered_on"
+      message: "VM is already powered on."
+  when: provider_result.status | trim == "powered_on"
+
+- name: Vcenter | Poweron | End host (already powered on)
+  ansible.builtin.meta: end_host
+  when: provider_result.status | trim == "powered_on"
+
+# ------------------------------------------------------------
+# 3) Cleanup decom labels before power on : Powered off → Power on Vcenter VM
+# ------------------------------------------------------------
+- name: Vcenter | Poweron | Cleanup decom labels before activation
+  ansible.builtin.include_tasks: cleanup_labels.yml
+  when: provider_result.status | trim == "powered_off"
+
+# ------------------------------------------------------------
+# 4) Find Vcenter Datacenters information
+# ------------------------------------------------------------
+#4.1)  Get Datacenters information
+- name: Vcenter | Poweron | Discover all datacenters
+  community.vmware.vmware_datacenter_info:
+    hostname: "{{ vcenter_console }}"
+    username: "{{ vcenter_username }}"
+    password: "{{ vcenter_password }}"
+    validate_certs: "{{ vcenter_verify }}"
+  delegate_to: localhost
+  register: vcenter_dcs
+
+# ------------------------------------------------------------
+# 5) Power on VM : Powered off → Power on 
+# ------------------------------------------------------------
+
+- name: Vcenter | Poweron | Power on VM
+  community.vmware.vmware_guest_powerstate:
+    hostname: "{{ vcenter_console }}"
+    username: "{{ vcenter_username }}"
+    password: "{{ vcenter_password }}"
+    validate_certs: "{{ vcenter_validate_certs | default(false) }}"
+    name: "{{ provider_result.vm_name }}"
+    state: powered-on
+  delegate_to: localhost
+  register: vcenter_poweron_result
+  when: provider_result.status | trim == "powered_off"
+
+
+# ------------------------------------------------------------
+# 6) Wait until VM is running
+# ------------------------------------------------------------
+- name: Vcenter | Poweron | Wait until VM is powered on
+  community.vmware.vmware_guest_info:
+    hostname: "{{ vcenter_console }}"
+    username: "{{ vcenter_username }}"
+    password: "{{ vcenter_password }}"
+    validate_certs: "{{ vcenter_validate_certs | default(false) }}"
+    name: "{{ provider_result.vm_name }}"
+    datacenter: "{{ dc }}"
+  loop: "{{ vcenter_dcs.datacenter_info }}"
+  loop_control:
+    loop_var: dc
+    label: "{{ dc }}"
+  register: vcenter_power_check
+  until: >-
+    (
+      (
+        vcenter_power_check.results
+        | default([vcenter_power_check])
+        | selectattr('instance','defined')
+        | map(attribute='instance.hw_power_status')
+        | map('lower')
+        | list
+      )[0]
+    ) == 'poweredon'
+  retries: 60
+  delay: 5
+  delegate_to: localhost
+  when: provider_result.status | trim == "powered_off"
+
+# ------------------------------------------------------------
+# 6) Set Vcenter VM Status of power off result
+# ------------------------------------------------------------
+#6.1) Set shutdown succcess
+- name: Vcenter | Poweron | Set poweron result
+  ansible.builtin.set_fact:
+    vcenter_poweron_success: >-
+      {{
+        (
+          (
+            vcenter_power_check.results
+            | default([vcenter_power_check])
+            | selectattr('instance','defined')
+            | map(attribute='instance.hw_power_status')
+            | map('lower')
+            | list
+          )[0]
+        ) == 'poweredon'
+      }}
+  when: provider_result.status | trim == "powered_off"
+
+#6.2) Update provider_result.status == powered_off after successful shutdown
+
+- name: Vcenter | Poweron | Update provider_result to powered_on
+  ansible.builtin.set_fact:
+    provider_result:
+      host: "{{ inventory_hostname }}"
+      provider: "vcenter"
+      operation: "poweron"
+      vm_name: "{{ provider_result.vm_name }}"
+      status: "powered_on"
+      message: "VM successfully powered on."
+  when:
+    - provider_result.status | trim == "powered_off"
+    - vcenter_poweron_success | default(false)
+
+# ------------------------------------------------------------
+# 7) Set  Vcenter VM status if power off is failed
+# ------------------------------------------------------------
+- name: Vcenter | Poweron | Poweron failed
+  ansible.builtin.set_fact:
+    provider_result:
+      host: "{{ inventory_hostname }}"
+      provider: "vcenter"
+      operation: "poweron"
+      vm_name: "{{ provider_result.vm_name }}"
+      status: "powered_on_failed"
+      message: "VM could not be powered on in vCenter."
+  when:
+    - provider_result.status | trim == "powered_off"
+    - not vcenter_poweron_success | default(false)
+
+- name: Vcenter | Poweron | Stop host after poweron failure
+  ansible.builtin.meta: end_host
+  when: provider_result.status | trim == "powered_on_failed"

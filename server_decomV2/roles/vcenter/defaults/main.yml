@@ -1,0 +1,5 @@
+---
+vcenter_operation: status
+vcenter_validate_certs: false
+vcenter_username: "{{ username }}"
+vcenter_password: "{{ password }}"

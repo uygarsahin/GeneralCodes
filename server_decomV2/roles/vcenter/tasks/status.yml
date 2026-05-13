@@ -1,0 +1,128 @@
+---
+# VM exist → Running                         → powered_on
+# VM exist → Stopped / Halted                → powered_off
+# VM exist → Other status                    → unknown
+#
+# VM non exist + Datacenter not found        → console_error
+# VM non exist + connection                  → console_error
+# VM non exist + Datacenter exist            → not_found_in_console
+#
+# Output:
+#   provider_result
+# ============================================================
+
+# ===================== DEFAULTS =====================
+- name: Vcenter | Status | Defaults
+  ansible.builtin.set_fact:
+    vcenter_verify: "{{ vcenter_validate_certs | default(false) }}"
+    vcenter_vm_name: "{{ infra.extra | default(infra.name) }}"
+    vcenter_console: "{{ infra.console }}"
+    vcenter_status_msg: "n/a"
+
+# ===================== QUERY Datacenters =====================
+
+- name: Vcenter | Status | All datacenters Info in vcenter
+  community.vmware.vmware_datacenter_info:
+    hostname: "{{ vcenter_console }}"
+    username: "{{ vcenter_username }}"
+    password: "{{ vcenter_password }}"
+    validate_certs: "{{ vcenter_verify }}"
+  delegate_to: localhost
+  register: vcenter_dcs
+
+#- name: DEBUG | Discovered datacenters
+#  ansible.builtin.debug:
+#    var: vcenter_dcs
+
+# ===================== QUERY VM =====================
+# 1) VirtualMachine
+- name: Vcenter | Status | Try VM lookup in each datacenter
+  community.vmware.vmware_guest_info:
+    hostname: "{{ vcenter_console }}"
+    username: "{{ vcenter_username }}"
+    password: "{{ vcenter_password }}"
+    validate_certs: "{{ vcenter_verify }}"
+    name: "{{ vcenter_vm_name }}"
+    datacenter: "{{ item.name }}"
+  loop: "{{ vcenter_dcs.datacenter_info }}"
+  loop_control:
+    label: "{{ item.name }}"
+  register: vcenter_vm_info_all
+  failed_when: false
+  changed_when: false
+  delegate_to: localhost
+
+#- name: DEBUG |  Status | All VM lookup results by datacenter
+#  ansible.builtin.debug:
+#    var: vcenter_vm_info_all
+
+# ---------------------------------------------------------------------------
+# Derive final facts from the multi-DC search
+# ---------------------------------------------------------------------------
+
+- name: Vcenter | Status | Collect found results
+  ansible.builtin.set_fact:
+    vcenter_found_results: "{{ vcenter_vm_info_all.results | selectattr('instance', 'defined') | list }}"
+
+- name: Vcenter | Status | Set found flags and chosen result
+  ansible.builtin.set_fact:
+    vcenter_vm_found: "{{ vcenter_found_results | length > 0 }}"
+    vcenter_vm_info: "{{ (vcenter_found_results | first) | default({}) }}"
+
+# ===================== DERIVE FACTS =====================
+
+- name: Vcenter | Status | Derive facts
+  ansible.builtin.set_fact:
+    # datacenter where VM was found (if any)
+    vcenter_datacenter: "{{ vcenter_vm_info.item.name | default('n/a') }}"
+    vcenter_vm_power: >-
+      {% if vcenter_vm_info.instance is defined
+            and vcenter_vm_info.instance.hw_power_status is defined %}
+        {{ vcenter_vm_info.instance.hw_power_status | lower }}
+      {% else %}
+        n/a
+      {% endif %}
+    vcenter_moid: "{{ vcenter_vm_info.instance.moid | default('n/a') | trim }}"
+    vcenter_query_error: >-
+      {{
+        vcenter_vm_info_all.results
+        | selectattr('failed', 'defined')
+        | selectattr('failed')
+        | selectattr('msg', 'defined')
+        | map(attribute='msg')
+        | first
+        | default('')
+      }}
+
+# ===================== EXPORT provider_result =====================
+
+- name: Vcenter | Status | Build provider_result
+  ansible.builtin.set_fact:
+    provider_result:
+      host: "{{ inventory_hostname }}"
+      provider: "vcenter"
+      operation: "status"
+      vm_name: "{{ vcenter_vm_name }}"
+      status: >-
+        {% if vcenter_vm_found %}
+          {% if vcenter_vm_power | lower | trim in ['poweredoff', 'powered_off'] %}
+            powered_off
+          {% elif vcenter_vm_power | lower | trim in ['poweredon', 'powered_on'] %}
+            powered_on
+          {% else %}
+            unknown
+          {% endif %}
+        {% elif vcenter_query_error != '' %}
+          console_error
+        {% else %}
+          not_found_in_console
+        {% endif %}
+        {{ '' }} 
+      message: >-
+        {% if vcenter_vm_found %}
+          Power state: {{ vcenter_vm_power }}
+        {% elif vcenter_query_error | trim != '' %}
+          Vcenter error: {{ vcenter_query_error }}
+        {% else %}
+          VM not found in vCenter {{ vcenter_console }}
+        {% endif %}

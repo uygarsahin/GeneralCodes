@@ -1,0 +1,90 @@
+---
+# VM exist → Running                         → powered_on
+# VM exist → Stopped / Halted                → powered_off
+# VM exist → Other status                    → unknown
+#
+# VM non exist + namespace not found         → console_error
+# VM non exist + API / auth / connection     → console_error
+# VM non exist + namespace exist             → not_found_in_console
+#
+# Output:
+#   provider_result
+# ============================================================
+
+# ===================== DEFAULTS =====================
+- name: OCP | Status | Defaults
+  ansible.builtin.set_fact:
+    ocp_verify: "{{ ocp_validate_certs | default(false) }}"
+    ocp_api_url: "{{ infra.api | trim }}"
+    ocp_vm_name: "{{ infra.name }}"
+    ocp_namespace: "{{ infra.extra }}"
+    ocp_token_norm: "{{ ocp_token[0] }}"
+    ocp_status_msg: "n/a"
+
+# ===================== QUERY VM =====================
+# 1) VirtualMachine
+- name: OCP | Status | Query VirtualMachine
+  kubernetes.core.k8s_info:
+    host: "{{ ocp_api_url }}"
+    api_key: "{{ ocp_token_norm }}"
+    validate_certs: "{{ ocp_verify }}"
+    api_version: kubevirt.io/v1
+    kind: VirtualMachine
+    name: "{{ ocp_vm_name }}"
+    namespace: "{{ ocp_namespace }}"
+  register: ocp_vm
+  failed_when: false
+  changed_when: false
+
+#- name: debug
+#  ansible.builtin.debug:
+#    var: ocp_vm
+
+# ===================== DERIVE FACTS =====================
+- name: OCP | Status | Derive found
+  ansible.builtin.set_fact:
+    ocp_vm_found: "{{ (ocp_vm.resources | default([]) | length) > 0 }}"
+
+- name: OCP | Status | Derive facts
+  ansible.builtin.set_fact:
+    ocp_vm_power: >-
+      {%- if ocp_vm_found
+            and ocp_vm.resources[0].status is defined
+            and ocp_vm.resources[0].status.printableStatus is defined -%}
+        {{ ocp_vm.resources[0].status.printableStatus | lower }}
+      {%- else -%}
+        unknown
+      {%- endif -%}
+    ocp_query_error: "{{ ocp_vm.msg | default('') }}"
+
+# ===================== EXPORT provider_result =====================
+
+- name: OCP | Status | Build provider_result
+  ansible.builtin.set_fact:
+    provider_result:
+      host: "{{ inventory_hostname }}"
+      provider: "ocp"
+      operation: "status"
+      vm_name: "{{ ocp_vm_name }}"
+      status: >-
+        {%- if ocp_vm_found -%}
+          {%- if ocp_vm_power in ['stopped', 'halted'] -%}
+            powered_off
+          {%- elif ocp_vm_power == 'running' -%}
+            powered_on
+          {%- else -%}
+            unknown
+          {%- endif -%}
+        {%- elif ocp_query_error != '' -%}
+          console_error
+        {%- else -%}
+          not_found_in_console
+        {%- endif -%}
+      message: >-
+        {%- if ocp_vm_found -%}
+          Power state: {{ ocp_vm_power }}
+        {%- elif ocp_query_error != '' -%}
+          OCP error: {{ ocp_query_error }}
+        {%- else -%}
+          VM not found in namespace {{ ocp_namespace }}
+        {%- endif -%}

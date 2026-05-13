@@ -1,0 +1,124 @@
+---
+# ============================================================
+# Rename Policy (Vcenter – Provider Result Driven)
+#
+# Preconditions:
+#   provider_result.status == powered_off
+#
+# Effect:
+#   - DO NOT rename Vcenter VM profile name
+#   - ONLY update label to: status:decom
+#
+# Output:
+#   provider_result (updated, final)
+# ============================================================
+
+# ------------------------------------------------------------
+# Guard 
+# ------------------------------------------------------------
+
+# Guard – provider_result must exist
+- name: Vcenter | Rename | Guard | provider_result must exist
+  ansible.builtin.fail:
+    msg: "provider_result is missing - status.yml must be executed before rename.yml"
+  when: provider_result is not defined
+
+# Guard - only allowed for powered_off
+- name: Vcenter | Rename | Guard | Only allowed for powered_off
+  ansible.builtin.meta: end_host
+  when: provider_result.status | trim != "powered_off"
+
+# ------------------------------------------------------------
+# Add status=decom label on Vcenter VM (using annotation as label)
+# ------------------------------------------------------------
+
+#- name: Vcenter | Discover all datacenters
+#  community.vmware.vmware_datacenter_info:
+#    hostname: "{{ vcenter_console }}"
+#    username: "{{ vcenter_username }}"
+#    password: "{{ vcenter_password }}"
+#    validate_certs: "{{ vcenter_verify }}"
+#  delegate_to: localhost
+#  register: vcenter_dcs
+
+#- name: DEBUG | Discovered datacenters
+#  ansible.builtin.debug:
+#    var: vcenter_dcs
+
+- name: vCenter | Rename | Get VM info (for existing notes)
+  community.vmware.vmware_guest_info:
+    hostname: "{{ vcenter_console }}"
+    username: "{{ vcenter_username }}"
+    password: "{{ vcenter_password }}"
+    validate_certs: "{{ vcenter_validate_certs | default(false) }}"
+    name: "{{ provider_result.vm_name }}"
+    datacenter: "{{ vcenter_datacenter }}" 
+#  loop: "{{ vcenter_dcs.datacenter_info }}"
+#  loop_control:
+#    label: "{{ item }}"
+  delegate_to: localhost
+  register: vm_info
+#  when: provider_result.status == "powered_off"
+
+#- name: vCenter | Select first VM info result
+#  ansible.builtin.set_fact:
+#    vm_info_selected: >-
+#      {{
+#        vm_info_raw.results
+#        | selectattr('instance', 'defined')
+#        | list
+#        | first
+#      }}
+#    when: provider_result.status == "powered_off"
+
+- name: Vcenter | Rename |Prepare new VM annotation (prepend status:decom)
+  ansible.builtin.set_fact:
+    new_vm_annotation: |-
+      {%- set current = (vm_info.instance.annotation | default('') | trim) -%}
+      {%- if 'status:decom' in current -%}
+      {{ current }}
+      {%- elif current != '' -%}
+      status:decom
+      {{ current }}
+      {%- else -%}
+      status:decom
+      {%- endif -%}
+  when: vm_info.instance is defined
+
+# ------------------------------------------------------------
+# Add status=decom label on Vcenter VM 
+# ------------------------------------------------------------
+
+- name: Vcenter | Rename | Notes - status:decom
+  community.vmware.vmware_guest:
+    hostname: "{{ vcenter_console }}"
+    username: "{{ vcenter_username }}"
+    password: "{{ vcenter_password }}"
+    validate_certs: "{{ vcenter_validate_certs | default(false) }}"
+    name: "{{ provider_result.vm_name }}"
+    annotation: "{{ new_vm_annotation }}"
+    state: present
+#    datacenter: "{{ vm_info.invocation.module_args.datacenter }}"
+  delegate_to: localhost
+  when: vm_info.instance is defined
+
+# ------------------------------------------------------------
+# Final provider_result (rename result)
+# ------------------------------------------------------------
+
+- name: Vcenter | Rename | Build provider_result
+  ansible.builtin.set_fact:
+    provider_result:
+      host: "{{ inventory_hostname }}"
+      provider: "vcenter"
+      operation: "labeled_server"
+      vm_name: "{{ provider_result.vm_name }}"
+      status: "powered_off"
+      message: >-
+        {%- if rename_reason == 'already_powered_off' -%}
+          VM '{{ provider_result.vm_name }}' was already powered off and labeled with status:decom.
+        {%- elif rename_reason == 'shutdown_performed' -%}
+          VM '{{ provider_result.vm_name }}' was shut down and labeled with status:decom
+        {%- else -%}
+          VM '{{ provider_result.vm_name }}' labeled with status:decom.
+        {%- endif -%}

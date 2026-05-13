@@ -1,0 +1,224 @@
+---
+# ===================== PLAY 1: BUILD DYNAMIC INVENTORY =====================
+- name: MAIN | Build dynamic inventory from survey list
+  hosts: localhost
+  connection: local
+  gather_facts: false
+
+  tasks:
+    - name: MAIN | BUILD | Normalize survey server list raw string
+      ansible.builtin.set_fact:
+        survey_server_list_normalized: >-
+          {{
+            survey_server_list | default('') | string
+            | regex_replace('[\r\n;\t]+', ',')
+          }}
+
+    - name: MAIN | BUILD | Parse normalized survey list into array
+      ansible.builtin.set_fact:
+        survey_servers: >-
+          {{
+            survey_server_list_normalized
+            | split(',')
+            | map('trim')
+            | reject('equalto', '')
+            | unique
+            | list
+          }}
+
+    - name: MAIN | BUILD | Fail if no servers provided
+      ansible.builtin.fail:
+        msg: "Survey List is empty."
+      when: survey_servers | length == 0
+
+    - name: MAIN | BUILD | Create dynamic hosts for this run
+      ansible.builtin.add_host:
+        name: "{{ item }}"
+        groups: survey_targets
+        ansible_connection: local
+      loop: "{{ survey_servers }}"
+
+    - name: MAIN | BUILD | Init orchestrator result bucket on localhost
+      ansible.builtin.set_fact:
+        orchestrator_results: []
+
+# ===================== PLAY 2: ORCHESTRATOR PER TARGET =====================
+- name: MAIN | Server Decommission Orchestrator
+  hosts: survey_targets
+  connection: local
+  gather_facts: false
+
+  vars:
+    operation:     "{{ operation | default('status', true) }}"
+    sr_ch_number:  "{{ sr_ch_number | default('N/A', true) }}"
+
+  tasks:
+    # --------------------------------------------------
+    #  context
+    # --------------------------------------------------
+    - name: MAIN | ORCHESTRATOR | Per-host sanity
+      ansible.builtin.debug:
+        msg: "SR/CH='{{ sr_ch_number }}' op='{{ operation }}' host='{{ inventory_hostname }}'"
+
+    - name: MAIN | ORCHESTRATOR | Get vault file contents
+      ansible.builtin.include_vars:
+        file: vault.yml
+      no_log: true
+      tags: always
+
+    - name: MAIN | ORCHESTRATOR | Assert operation is valid
+      ansible.builtin.assert:
+        that:
+          - operation in ['status', 'poweroff', 'poweron', 'delete']
+        fail_msg: "Invalid operation='{{ operation }}'. Allowed: status|poweroff|poweron|delete"
+
+    # --------------------------------------------------
+    # Init per-host orchestrator list
+    # --------------------------------------------------
+    - name: MAIN | ORCHESTRATOR | Init orchestrator result list
+      ansible.builtin.set_fact:
+        orchestrator_results: []
+      when: orchestrator_results is not defined
+
+    # --------------------------------------------------
+    # DB lookup
+    # --------------------------------------------------
+    - name: MAIN | ORCHESTRATOR | Set Postgres Database Facts
+      ansible.builtin.set_fact:
+        dbuser:     "{{ pg_database[aap_environment]['pg_user'] }}"
+        dbpassword: "{{ pg_database[aap_environment]['pg_password'] }}"
+        dbname:     "{{ pg_database[aap_environment]['pg_db'] }}"
+        dbhost:     "{{ pg_database[aap_environment]['pg_host'] }}"
+        dbtable:    "{{ pg_database[aap_environment]['pg_table'] }}"
+      no_log: true
+      tags: always
+
+    - name: MAIN | ORCHESTRATOR | Lookup infra via DB role
+      ansible.builtin.import_role:
+        name: db_lookup
+      tags: [db_lookup]
+
+    - name: MAIN | ORCHESTRATOR | Append DB lookup result
+      ansible.builtin.set_fact:
+        orchestrator_results: "{{ orchestrator_results + [provider_result] }}"
+      when:
+        - provider_result is defined
+        - provider_result not in orchestrator_results
+
+    - name: MAIN | ORCHESTRATOR | Normalize infra vars
+      ansible.builtin.set_fact:
+        infra_found: "{{ db_lookup_infra_found | default(false) | bool }}"
+        infra:       "{{ db_lookup_infra        | default({}) }}"
+
+    # --------------------------------------------------
+    # Provider dispatch (provider_result driven)
+    # --------------------------------------------------
+    - name: MAIN | ORCHESTRATOR | OCP provider
+      ansible.builtin.import_role:
+        name: ocp
+      vars:
+        ocp_infra:     "{{ infra }}"
+        ocp_operation: "{{ operation }}"
+      when: infra_found and infra.type | lower == 'openshift'
+
+    - name: MAIN | ORCHESTRATOR | Append OCP result
+      ansible.builtin.set_fact:
+        orchestrator_results: "{{ orchestrator_results + [provider_result] }}"
+      when:
+        - provider_result is defined
+        - provider_result not in orchestrator_results
+
+    - name: MAIN | ORCHESTRATOR | vCenter provider
+      ansible.builtin.import_role:
+        name: vcenter
+      vars:
+        vcenter_infra:     "{{ infra }}"
+        vcenter_operation: "{{ operation }}"
+      when: infra_found and infra.type | lower == 'vcenter'
+
+    - name: MAIN | ORCHESTRATOR | Append vCenter result
+      ansible.builtin.set_fact:
+        orchestrator_results: "{{ orchestrator_results + [provider_result] }}"
+      when:
+        - provider_result is defined
+        - provider_result not in orchestrator_results
+
+    - name: MAIN | ORCHESTRATOR | HMC provider
+      ansible.builtin.import_role:
+        name: hmc
+      vars:
+        hmc_infra:     "{{ infra }}"
+        hmc_operation: "{{ operation }}"
+      when: infra_found and infra.type | lower == 'hmc'
+
+    - name: MAIN | ORCHESTRATOR | Append HMC result
+      ansible.builtin.set_fact:
+        orchestrator_results: "{{ orchestrator_results + [provider_result] }}"
+      when:
+        - provider_result is defined
+        - provider_result not in orchestrator_results
+
+    - name: MAIN | ORCHESTRATOR | Physical provider
+      ansible.builtin.import_role:
+        name: physical
+      vars:
+        physical_infra:     "{{ infra }}"
+        physical_operation: "{{ operation }}"
+      when: infra_found and infra.type | lower == 'physical'
+
+    - name: MAIN | ORCHESTRATOR | Append Physical result
+      ansible.builtin.set_fact:
+        orchestrator_results: "{{ orchestrator_results + [provider_result] }}"
+      when:
+        - provider_result is defined
+        - provider_result not in orchestrator_results
+
+    # --------------------------------------------------
+    # Unified per-host result
+    # --------------------------------------------------
+    - name: MAIN | ORCHESTRATOR | Compute final unified status
+      ansible.builtin.set_fact:
+        final_provider_status: >-
+          {{
+            (
+              orchestrator_results
+              | default([])
+              | selectattr('status', 'defined')
+              | list
+              | last
+              | default({'status': provider_result.status | trim})
+            ).status | trim
+          }}
+
+    - name: MAIN | ORCHESTRATOR | Compute final unified message
+      ansible.builtin.set_fact:
+        final_provider_message: >-
+          {{
+            (
+              orchestrator_results
+              | selectattr('message', 'defined')
+              | list
+              | last
+              | default({'message': provider_result.message | default('')})
+            ).message | trim
+          }}
+
+#    - name: MAIN | ORCHESTRATOR | Show unified result (per host)
+#      ansible.builtin.debug:
+#        msg: "{{ '%-20s : %-18s %s'
+#                 | format(inventory_hostname,
+#                          final_provider_status | default('unknown') | trim,
+#                          final_provider_message | default('') | trim ) }}"
+
+# ===================== PLAY 3: FINAL SHORT SUMMARY =====================
+- name: MAIN | Final short summary (always runs)
+  hosts: survey_targets
+  connection: local
+  gather_facts: false
+
+  tasks:
+    - name: MAIN | SUMMARY | Show final short status summary
+      ansible.builtin.debug:
+        msg: "{{ '%-20s : %s'
+                 | format(inventory_hostname,
+                          hostvars[inventory_hostname].final_provider_status | default(provider_result.status | trim) | trim) }}"

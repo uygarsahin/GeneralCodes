@@ -1,0 +1,42 @@
+---
+# ============================================================
+#  Cleanup Labels Policy (OCP – Provider Result Driven)
+#
+# Preconditions:
+#   provider_result.status == powered_on
+#
+# Effect:
+#   - ONLY remove label : status:decom
+#
+# Output:
+#   provider_result (updated, final)
+# ============================================================
+
+# ------------------------------------------------------------
+# Guard
+# ------------------------------------------------------------
+- name: OCP | Cleanup | Guard | provider_result must exist
+  ansible.builtin.fail:
+    msg: "provider_result is missing - status.yml must be executed before cleanup_labels.yml"
+  when: provider_result is not defined
+
+# ------------------------------------------------------------
+# Remove status=decom label if exists
+# ------------------------------------------------------------
+- name: OCP | Cleanup | Remove status:decom label
+  kubernetes.core.k8s:
+    host: "{{ ocp_api_url }}"
+    api_key: "{{ ocp_token_norm }}"
+    validate_certs: "{{ ocp_verify }}"
+    api_version: kubevirt.io/v1
+    kind: VirtualMachine
+    namespace: "{{ infra.extra }}"
+    name: "{{ provider_result.vm_name }}"
+    state: present
+    merge_type: merge
+    definition:
+      metadata:
+        labels:
+         status: null
+  when:
+    - provider_result is defined

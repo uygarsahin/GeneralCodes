@@ -1,0 +1,37 @@
+---
+- name: OCP | GetToken | Defaults
+  ansible.builtin.set_fact:
+    ocp_verify: "{{ ocp_validate_certs | default(false) }}"
+    ocp_raw_oauth: "{{ infra.oauth | trim }}"
+
+- name: OCP | GetToken | Request access token (302 with Location)
+  ansible.builtin.uri:
+    url: "{{ ocp_raw_oauth }}?response_type=token&client_id=openshift-challenging-client"
+    method: GET
+    user: "{{ ocp_username }}"
+    password: "{{ ocp_password }}"
+    force_basic_auth: true
+    headers:
+      X-CSRF-Token: "1"
+    return_content: false
+    status_code: 302
+    validate_certs: "{{ ocp_verify }}"
+    follow_redirects: none
+  register: ocp_oauth_response
+
+- name: OCP | GetToken | Ensure redirect and Location
+  ansible.builtin.assert:
+    that:
+      - ocp_oauth_response.status == 302
+      - ocp_oauth_response.location is defined
+      - ocp_oauth_response.location | length > 0
+    fail_msg: "OAuth flow did not return 302 with Location header."
+
+- name: OCP | GetToken | Extract access token from Location
+  ansible.builtin.set_fact:
+    ocp_token: "{{ ocp_oauth_response.location | regex_search('access_token=([^&]+)', '\\1') }}"
+
+- name: OCP | GetToken | Fail if token not found
+  ansible.builtin.fail:
+    msg: "access_token not found in Location: {{ ocp_oauth_response.location }}"
+  when: ocp_token | length == 0

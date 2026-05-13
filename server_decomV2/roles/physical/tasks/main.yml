@@ -1,0 +1,10 @@
+---
+- name: Physical | Status
+  ansible.builtin.include_tasks: status.yml
+
+- name: Physical | Dispatch operation
+  ansible.builtin.include_tasks: "{{ item }}"
+  when: physical_operation == item.split('.')[0]
+  loop:
+    - poweroff.yml
+    - poweron.yml

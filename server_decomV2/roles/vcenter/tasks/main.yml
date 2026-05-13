@@ -1,0 +1,17 @@
+---
+- name: Vcenter| Get vault file contents
+  ansible.builtin.include_vars:
+    file: ../../../vault.yml
+  no_log: true
+
+- name: Vcenter | Status
+  ansible.builtin.include_tasks: status.yml
+
+- name: Vcenter | Dispatch operation
+  ansible.builtin.include_tasks: "{{ item }}"
+  when: vcenter_operation == item.split('.')[0]
+  loop:
+    - poweroff.yml
+#    - rename.yml
+    - delete.yml
+    - poweron.yml
