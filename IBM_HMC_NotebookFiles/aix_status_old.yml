@@ -1,0 +1,26 @@
+---
+- name: Checking Power Systems
+  hosts: all
+  connection: local
+  gather_facts: false
+
+  vars:
+    hmc_name: 'dcmidvmhmchmc1001.edc.nam.gm.com'
+    ibm_frame: 'DCMITPHPWR001-SN7837BD8'
+    lpar: 'dcmitvmrv0003'
+
+  tasks:
+    - name: Execute a command on HMC
+      ibm.power_hmc.hmc_command:
+        hmc_host: '{{ hmc_name }}'
+        hmc_auth:
+          username: '{{ hmc_user }}'
+          password: '{{ hmc_password }}'
+#       cmd: "lssyscfg -r sys -F name "
+        cmd: 'lssyscfg -r lpar -m {{ ibm_frame }} --filter "lpar_names={{ lpar }}" -F state'
+#        cmd: 'rmsyscfg -r lpar -m {{ ibm_frame }}  -n {{ lpar }} --vdisk --vioscfg'
+      register: out
+
+    - name: Out
+      ansible.builtin.debug:
+        msg: "{{ lpar }} : {{ out.command_output }}"

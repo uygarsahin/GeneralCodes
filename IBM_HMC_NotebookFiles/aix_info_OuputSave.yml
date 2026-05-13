@@ -1,0 +1,78 @@
+---
+- name: Collect system data and save locally
+  hosts: all
+  become: true
+  gather_facts: false
+
+  vars:
+    ansible_user: "{{ ssh_user }}"
+    ansible_ssh_pass: "{{ ssh_password }}"
+    temp_output: "/tmp/system_info_{{ inventory_hostname }}.txt"
+    local_output: "output/{{ inventory_hostname }}.log"
+
+  tasks:
+
+    - name: Prepare temp output file on remote
+      ansible.builtin.copy:
+        content: ""
+        dest: "{{ temp_output }}"
+        mode: "0600"
+
+    - name: Collect data and write to remote file
+      block:
+        - name: Collect system info
+          ansible.builtin.shell: |
+            hostname
+            echo "====================== PV-FS-PATHs-VGs-Lvs ========================="
+            lspv -u
+            df -g
+            lspath
+            lsvg -o
+            lvlstmajor
+            ls -l /dev/*vg*
+            ls -l /dev | grep "\->"
+            lsvg |awk '{print "lsvg -l "$1}'  | ksh
+            echo " "
+            lspv -u | awk 'BEGIN{
+                "sudo hostname" | getline myhost
+                printf "%-30s %-15s %-10s %-14s %-14s %-14s %-12s %-20s %-14s %-40s %-10s\n\n", "Hostname", "Disk", "Paths", "Capacity(GB)", "VG_Name", "Reserve_Policy","Queue_depth", "PVID", "Storage_Type", "Disk_SeriNo", "LUN_Status"
+            }{
+                "sudo lsattr -El "$1" | grep reserve_policy | cut -d\" \" -f 3" | getline policy
+                "sudo lsattr -El "$1" | grep queue_depth | cut -d\" \" -f 6" | getline queue_depth
+                "sudo odmget -q \"name="$1" and attribute=unique_id\" CuAt | grep -i value | cut -d\"=\" -f2" | getline diskID
+                "sudo lsdev -l "$1" -r description | cut -d\" \" -f1" | getline manufacture
+                "sudo lspath -l "$1" | grep -ci enable" | getline numberOfpath
+                "sudo bootinfo -s "$1 | getline capacity
+                LUN_Status = ($3 == "None" ? "standalone" : ($3 == "altinst_rootvg" ? "standalone" : $4))
+                printf "%-30s %-15s %-10s %-14s %-14s %-14s %-12s %-20s %-14s %-40s %-10s\n", myhost, $1, numberOfpath, (capacity / 1024), $3, policy, queue_depth, $2, manufacture, substr(diskID, 3, (length(diskID) - 3)), LUN_Status
+            }'
+            echo "========================= HACMP ================================="
+            /usr/es/sbin/cluster/utilities/clRGinfo
+            /usr/es/sbin/cluster/utilities/cllsnode
+            /usr/es/sbin/cluster/utilities/clshowsrv -v
+            echo "======================= ADAPTERs ==================================="
+            ifconfig -a
+            lsdev -Cc adapter
+            lscfg -vpl fcs0
+            lscfg -vpl fcs1
+            echo vfcs | kdb | grep fcs
+            echo "=========================================================="
+          register: collected_data
+          changed_when: false
+
+        - name: Save collected data to remote temp file
+          ansible.builtin.copy:
+            dest: "{{ temp_output }}"
+            content: "{{ collected_data.stdout }}"
+            mode: "0600"
+
+    - name: Fetch the remote data to control node
+      ansible.builtin.fetch:
+        src: "{{ temp_output }}"
+        dest: "{{ local_output }}"
+        flat: true
+
+    - name: Remove temp file from remote host
+      ansible.builtin.file:
+        path: "{{ temp_output }}"
+        state: absent

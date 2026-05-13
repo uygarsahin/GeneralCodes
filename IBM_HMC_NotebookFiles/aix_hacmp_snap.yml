@@ -1,0 +1,50 @@
+---
+- name: HACMP Snapshot
+  hosts: all
+  become: true
+  gather_facts: false
+
+  vars:
+    ansible_user: "{{ ssh_user }}"
+    ansible_ssh_pass: "{{ ssh_password }}"
+
+  tasks:
+
+    - name: Run system data collection as a single block
+      ansible.builtin.shell: |
+        echo "=== HOSTNAME ==="
+        hostname
+        echo "=== DATE ==="
+        date
+        echo "=== UPTIME ==="
+        uptime
+        echo "=== Create of HACMP snapshot ==="
+        /usr/es/sbin/cluster/utilities/clmgr add snapshot 'before_upgrade_$(date +%Y%m%d)' DESCRIPTION="Before HACMP upgrade on primary node"
+      register: raw_output
+      changed_when: false
+
+    - name: Display pretty structured system info
+      ansible.builtin.debug:
+        var: raw_output.stdout_lines
+
+    - name: Create Snapshot for Hacmp CLuster
+      ansible.builtin.shell: |
+        echo "=== Create of HACMP snapshot ==="
+        /usr/es/sbin/cluster/utilities/clmgr add snapshot 'before_upgrade_$(date +%Y%m%d)' DESCRIPTION="Before HACMP upgrade on primary node"
+      register: snapshot_output
+      changed_when: false
+
+    - name: Display Snapshot
+      ansible.builtin.debug:
+        var: snapshot_output.stdout_lines
+
+    - name: Check the snapshot
+      ansible.builtin.shell:
+        /usr/es/sbin/cluster/utilities/clmgr list snapshot befor_upgrade_$(date +%Y%m%d)
+      register: snapshot_check
+      changed_when: false
+      failed_when: snapshot_check.rc != 0
+
+    - name: Display Snapshot
+      ansible.builtin.debug:
+        var: snapshot_check.stdout_lines

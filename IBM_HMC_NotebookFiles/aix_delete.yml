@@ -1,0 +1,21 @@
+- name: AIX LPAR
+  hosts: all
+  gather_facts: false
+  connection: local
+  tasks:
+    - name: IBM Frame Information
+      ansible.builtin.debug:
+        msg: "Server {{ inventory_hostname }} IBM Frame: {{ frame }} HMC: {{ hmc }}"
+
+    - name: Execute a command on HMC
+      ibm.power_hmc.hmc_command:
+        hmc_host: '{{ hmc }}'
+        hmc_auth:
+          username: '{{ hmc_user }}'
+          password: '{{ hmc_password }}'
+        cmd: 'rmsyscfg -r lpar -m {{ frame }}  -n {{ inventory_hostname }} --vdisk --vioscfg'
+      register: out
+
+    - name: Out
+      ansible.builtin.debug:
+        msg: "{{ inventory_hostname }} : {{ out.command_output }}"

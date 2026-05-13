@@ -1,0 +1,30 @@
+- name: AIX LPAR
+  hosts: all
+  gather_facts: false
+  connection: local
+
+  tasks:
+    - name: IBM Frame Information
+      ansible.builtin.debug:
+        msg: "Server {{ inventory_hostname }} - IBM Frame: {{ frame }} - HMC: {{ hmc }}"
+
+    - name: Execute a command on HMC
+      ibm.power_hmc.hmc_command:
+        hmc_host: '{{ hmc }}'
+        hmc_auth:
+          username: '{{ hmc_user }}'
+          password: '{{ hmc_password }}'
+        cmd: 'lssyscfg -r lpar -m {{ frame }} --filter "lpar_names={{ inventory_hostname }}" -F state'
+      register: out
+      changed_when: false
+      failed_when: false
+
+    - name: Check for missing partition
+      ansible.builtin.debug:
+        msg: "Server {{ inventory_hostname }} is not found!"
+      when: "'HSCL8012' in (out.msg | default('', true))"
+
+    - name: Output of Status
+      ansible.builtin.debug:
+        msg: "{{ inventory_hostname }} is in state: {{ out.command_output | default('Unknown', true) }}"
+      when: "'HSCL8012' not in (out.msg | default('', true))"
