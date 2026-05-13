@@ -1,0 +1,133 @@
+- name: VM PowerOff Orchestrator CSV input
+  hosts: localhost
+  gather_facts: false
+  strategy: free
+
+  vars_files:
+    - "{{ playbook_dir }}/vars/main.yml"
+    - "{{ playbook_dir }}/vars/vault.yml"
+
+  tasks:
+
+    - name: MAIN | INIT | Initialize final results
+      ansible.builtin.set_fact:
+        final_results: {}
+
+    - name: MAIN | VALIDATE | Ensure input not empty
+      ansible.builtin.fail:
+        msg: "csv_input is empty from AAP survey"
+      when: csv_input is not defined or csv_input | trim == ""
+
+    - name: MAIN | VALIDATE | Ensure CSV has header + data
+      ansible.builtin.fail:
+        msg: "CSV must contain header and at least one data row from AAP Survey"
+      when: csv_input.splitlines() | length < 2
+
+    - name: MAIN | PARSE | Normalize CSV lines
+      ansible.builtin.set_fact:
+        csv_lines: "{{ csv_input.splitlines() | map('trim') | reject('equalto', '') | list }}"
+      no_log: false
+
+    - name: MAIN | PARSE | Extract Normalized (lowercase) header 
+      ansible.builtin.set_fact:
+        header: "{{ csv_lines[0].split(',') | map('regex_replace', '\\s+', ' ') | map('trim') | map('lower') | list }}"
+
+#    - name: MAIN | PARSE | DEBUG | Extract header
+#      ansible.builtin.debug:
+#        var: header
+
+# if you need add new column , it should be lower case
+    - name: MAIN | VALIDATE | Required columns checking
+      ansible.builtin.fail:
+        msg: "Required columns missing in CSV (vCenter, VM ID)"
+      when: not (
+        'vcenter' in header and
+        'vm id' in header and
+        'vm' in header and
+        'vm power' in header
+        )
+
+    - name: MAIN | PARSE | Get column indexes
+      ansible.builtin.set_fact:
+        idx_vcenter: "{{ header.index('vcenter') | int }}"
+        idx_id: "{{ header.index('vm id') | int }}"
+        idx_vm: "{{ header.index('vm') | int }}"
+        idx_vm_power: "{{ header.index('vm power') | int }}"
+
+#    - name: MAIN | PARSE | DEBUG | Get column indexes
+#      ansible.builtin.debug:
+#      #  var: idx_uuid
+#        msg:
+#          - "idx_vcenter={{ idx_vcenter }}"
+#          - "idx_uuid={{ idx_uuid }}"
+#          - "idx_vm={{ idx_vm }}"
+
+    - name: MAIN | PARSE | Build vm_targets
+      ansible.builtin.set_fact:
+        vm_targets: >-
+          {{
+            vm_targets | default([]) +
+            [{
+              'vcenter': parts[idx_vcenter | int] | trim,
+              'vm_id': parts[idx_id | int] | trim,
+              'vm_name': parts[idx_vm | int ] | trim,
+              'vm_power': parts[idx_vm_power | int ] | trim
+            }]
+          }}
+      vars:
+        parts: "{{ item.split(',') }}"
+      loop: "{{ csv_lines[1:] }}"
+      loop_control:
+        label: "{{ item }}"
+      when:
+        - item | trim != ''
+        - parts | length > (idx_id |int )
+        - parts[idx_id | int ] | trim | length > 0
+      no_log: false
+
+#    - name: MAIN | PARSE | DEBUG | Build vm_targets
+#      debug:
+#        var: vm_targets
+
+    - name: MAIN | GROUP | Group by vCenter
+      ansible.builtin.set_fact:
+        grouped_targets: "{{ vm_targets | groupby('vcenter') | items2dict(key_name=0, value_name=1) }}"
+
+    - name: MAIN | EXECUTE | Per vCenter
+      ansible.builtin.include_tasks: "{{ playbook_dir }}/tasks/vc_ops.yml"
+      loop: "{{ grouped_targets | dict2items }}"
+      loop_control:
+        loop_var: csv_vc_item
+      no_log: false
+
+#    # Final output
+    - name: MAIN | Flatten results
+      ansible.builtin.set_fact:
+        all_vm_results: "{{ final_results.values() | map('dict2items') | flatten | list }}"
+
+    - name: MAIN | Calculate summary
+      ansible.builtin.set_fact:
+        total_vm: "{{ all_vm_results | length }}"
+        deleted_count: "{{ all_vm_results | selectattr('value.status','equalto','deleted') | list | length }}"
+        failed_count: "{{ all_vm_results | selectattr('value.status','equalto','failed') | list | length }}"
+        not_found_count: "{{ all_vm_results | selectattr('value.status','equalto','not_found') | list | length }}"
+
+    - name: MAIN | Extract failed VM list
+      ansible.builtin.set_fact:
+        failed_vms: "{{ all_vm_results | selectattr('value.status','equalto','failed') | map(attribute='key') | list }}"
+
+    - name: MAIN | DEBUG | Extract failed VM list
+      ansible.builtin.debug:
+        msg: "{{ failed_vms }}"
+
+    - name: MAIN | SUMMARY OUTPUT
+      debug:
+        msg:
+          - "=========== SUMMARY ==========="
+          - "Total VM       : {{ total_vm }}"
+          - "Deleted        : {{ deleted_count }}"
+          - "Already Deleted: {{ not_found_count }}"
+          - "Failed         : {{ failed_count }}"
+          - "================================"
+          - "FAILED VMs:"
+          - "{{ failed_vms }}"

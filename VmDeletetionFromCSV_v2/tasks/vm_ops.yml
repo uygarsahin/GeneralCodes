@@ -1,0 +1,137 @@
+---
+- name: VM_OPS | Initialize defaults
+  ansible.builtin.set_fact:
+    vc_current_power_state: "unknown"
+    vc_name: "unknown"
+    vm_delete_result: {}
+    vm_validate: {}
+    vc_vm_info: {}
+
+- name: VM_OPS | Get VM Search "{{ csv_vm_item.vm_name}}"
+  community.vmware.vmware_guest_info:
+    hostname: "{{ current_vcenter }}"
+    username: "{{ vcenter_username }}"
+    password: "{{ vcenter_password }}"
+    validate_certs: false
+    datacenter: "{{ item.name }}"
+    use_instance_uuid: true
+    uuid: "{{ csv_vm_item.vm_id }}"
+  delegate_to: localhost
+  loop: "{{ dc_info.datacenter_info }}"
+  register: vm_search
+  ignore_errors: true
+  no_log: false
+
+- name: VM_OPS | Extract valid VM result "{{ csv_vm_item.vm_name}}" 
+  ansible.builtin.set_fact:
+#    valid_vm: "{{ (vm_search.results | selectattr('failed', 'equalto', false) | list | first ) | default({})} }"
+    valid_vm: "{{ (vm_search.results | default([]) | selectattr('failed', 'equalto', false) | list | first) | default({}) }}"
+
+- name: VM_OPS | Set datacenter "{{ csv_vm_item.vm_name}}"
+  ansible.builtin.set_fact:
+    vm_datacenter: "{{ valid_vm.item.name }}"
+  when: 
+    - valid_vm is defined
+    - valid_vm != {}
+    - valid_vm.item is defined
+
+
+- name: VM_OPS | Get VM info "{{ csv_vm_item.vm_name}}"
+  community.vmware.vmware_guest_info:
+    hostname: "{{ current_vcenter }}"
+    username: "{{ vcenter_username }}"
+    password: "{{ vcenter_password }}"
+    datacenter: "{{ vm_datacenter }}"
+    validate_certs: false
+    use_instance_uuid: true
+    uuid: "{{ csv_vm_item.vm_id }}"
+  delegate_to: localhost
+  register: vc_vm_info
+  ignore_errors: true
+  no_log: false
+
+#- name: VM_OPS | DEBUG | Normalize states on Vcenter "{{ csv_vm_item.vm_name}}"
+#  ansible.builtin.debug:
+#    msg: "{{ vc_vm_info }}"
+
+- name: VM_OPS | Normalize states on Vcenter "{{ csv_vm_item.vm_name}}"
+  ansible.builtin.set_fact:
+    vc_current_power_state: "{{ vc_vm_info.instance.hw_power_status | default('unknown') | lower | trim }}"
+#    vc_name: "{{ vc_vm_info.instance.hw_name | map ('urldecode') | trim | default('unknown') }}"
+    vc_name: "{{ vc_vm_info.instance.hw_name | default('unknown') | trim }}"
+  when: vc_vm_info is not failed
+
+- name: VM_OPS | Normalize states on CSV
+  ansible.builtin.set_fact:
+    csv_power_state: "{{ csv_vm_item.vm_power | default('unknown') | lower | trim }}"
+    csv_vm_name: "{{ csv_vm_item.vm_name | default('unknown') | trim }}"
+
+- name: VM_OPS | Deletetion VM "{{ csv_vm_item.vm_name}}"
+  community.vmware.vmware_guest:
+    hostname: "{{ current_vcenter }}"
+    username: "{{ vcenter_username }}"
+    password: "{{ vcenter_password }}"
+    validate_certs: false
+    uuid: "{{ csv_vm_item.vm_id }}"
+    use_instance_uuid: true
+    datacenter: "{{ vm_datacenter }}"
+    state: absent
+  delegate_to: localhost
+  register: vm_delete_result
+  when:
+    - valid_vm != {}
+  ignore_errors: true
+  no_log: false
+
+- name: VM_OPS | Validate Deletetion "{{ csv_vm_item.vm_name}}"
+  community.vmware.vmware_guest_info:
+    hostname: "{{ current_vcenter }}"
+    username: "{{ vcenter_username }}"
+    password: "{{ vcenter_password }}"
+    datacenter: "{{ vm_datacenter }}"
+    validate_certs: false
+    use_instance_uuid: true
+    uuid: "{{ csv_vm_item.vm_id }}"
+  delegate_to: localhost
+  register: vm_validate
+  failed_when: false
+  until: vm_validate is failed
+  retries: 6
+  delay: 2
+  when:
+    - valid_vm != {}
+  ignore_errors: true
+  no_log: false
+
+- name: VM_OPS | Store result "{{ csv_vm_item.vm_name}}"
+  set_fact:
+    vc_results: >-
+      {{
+        vc_results | default({}) |
+        combine({
+          csv_vm_name: {
+
+            'vm_name': csv_vm_name,
+            'vm_uuid': csv_vm_item.vm_id | default('unknown'),
+            'vcenter': current_vcenter | default('unknown'),
+            'datacenter': vm_datacenter | default('unknown'),
+
+            'status':
+              (
+                valid_vm == {}
+              ) | ternary(
+                'not_found',
+
+                (
+                  (vm_delete_result is defined and vm_delete_result is failed)
+                  or
+                  (vm_validate is defined and vm_validate is succeeded)
+                ) | ternary(
+                  'failed',
+                  'deleted'
+                )
+              )
+
+          }
+        })
+      }}
