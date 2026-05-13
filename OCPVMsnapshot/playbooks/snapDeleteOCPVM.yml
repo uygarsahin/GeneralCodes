@@ -1,0 +1,25 @@
+---
+- name: Delete a VM snapshot in OpenShift
+  hosts: localhost
+  gather_facts: false
+  vars:
+    api_server: "server:6443"
+    api_token: ""
+    namespace: "2"
+    snapshot_name: "server-snapshot-20251009-082848"
+
+  tasks:
+    - name: Delete VM snapshot
+      ansible.builtin.uri:
+        url: "{{ api_server }}/apis/snapshot.kubevirt.io/v1alpha1/namespaces/{{ namespace }}/virtualmachinesnapshots/{{ snapshot_name }}"
+        method: DELETE
+        headers:
+          Authorization: "Bearer {{ api_token }}"
+          Accept: "application/json"
+        status_code: 200
+        return_content: true
+      register: delete_response
+
+    - name: Show deletion result
+      ansible.builtin.debug:
+        msg: "Snapshot '{{ snapshot_name }}' has been deleted. API response: {{ delete_response.status }}"

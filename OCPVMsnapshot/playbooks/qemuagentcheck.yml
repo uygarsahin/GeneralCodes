@@ -1,0 +1,40 @@
+---
+- name: Check QEMU Guest Agent status via OpenShift API
+  hosts: localhost
+  gather_facts: false
+  vars:
+    api_server: "server:6443"
+    api_token: ""
+    namespace: ""
+    vm_name: ""
+
+  tasks:
+    - name: Get VMI status
+      ansible.builtin.uri:
+        url: "{{ api_server }}/apis/kubevirt.io/v1/namespaces/{{ namespace }}/virtualmachineinstances/{{ vm_name }}"
+        method: GET
+        headers:
+          Authorization: "Bearer {{ api_token }}"
+          Accept: "application/json"
+        return_content: true
+        status_code: 200
+      register: vmi_response
+
+    - name: Check if QEMU Guest Agent is connected
+      ansible.builtin.set_fact:
+        agent_connected: >-
+          {{
+            vmi_response.json.status.conditions
+            | selectattr('type', 'equalto', 'AgentConnected')
+            | map(attribute='status')
+            | list
+          }}
+
+    - name: Show agent status
+      ansible.builtin.debug:
+        msg: >-
+          {% if 'True' in agent_connected %}
+            QEMU Guest Agent is connected and running.
+          {% else %}
+            QEMU Guest Agent is NOT connected.
+          {% endif %}

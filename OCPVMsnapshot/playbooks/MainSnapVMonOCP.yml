@@ -1,0 +1,71 @@
+---
+- name: Take snapshot only if QEMU Guest Agent is connected
+  hosts: localhost
+  gather_facts: false
+  vars:
+    api_server: "https://api.nam-rls-01.rls.nam.gm.com:6443"
+    api_token: "sha256~WuR8gGR1cQHwe8QtPjE98qBlb8qg1XYedTjJsbRC5xg"
+    vm_name: "dcmidavtmp2198"
+    snapshot_name: "{{ vm_name }}-snapshot-{{ lookup('pipe', 'date +%Y%m%d-%H%M%S') }}"
+
+  tasks:
+    - name: Find namespace of the VM
+      kubernetes.core.k8s_info:
+        host: "{{ api_server }}"
+        api_key: "{{ api_token }}"
+        api_version: kubevirt.io/v1
+        kind: VirtualMachineInstance
+        validate_certs: false
+      register: vmi_list
+
+    - name: Find VMI resource for the target VM
+      ansible.builtin.set_fact:
+        target_vmi: >-
+          {{
+            (vmi_list.resources
+              | selectattr('metadata.name', 'equalto', vm_name)
+              | list)[0]
+          }}
+
+    - name: Extract namespace of the VM
+      ansible.builtin.set_fact:
+        vm_namespace: "{{ target_vmi.metadata.namespace }}"
+
+    - name: Check if QEMU Guest Agent is connected
+      ansible.builtin.set_fact:
+        snapshot_safe: >-
+          {{
+            target_vmi.status.conditions
+            | selectattr('type', 'equalto', 'AgentConnected')
+            | map(attribute='status')
+            | list
+            | first == 'True'
+          }}
+
+    - name: Create snapshot if agent is connected
+      kubernetes.core.k8s:
+        host: "{{ api_server }}"
+        api_key: "{{ api_token }}"
+        validate_certs: false
+        state: present
+        definition:
+          apiVersion: snapshot.kubevirt.io/v1alpha1
+          kind: VirtualMachineSnapshot
+          metadata:
+            name: "{{ snapshot_name }}"
+            namespace: "{{ vm_namespace }}"
+          spec:
+            source:
+              apiGroup: kubevirt.io
+              kind: VirtualMachine
+              name: "{{ vm_name }}"
+      when: snapshot_safe
+
+    - name: Show snapshot result
+      ansible.builtin.debug:
+        msg: >-
+          {% if snapshot_safe %}
+            Snapshot '{{ snapshot_name }}' created in namespace '{{ vm_namespace }}'.
+          {% else %}
+            Snapshot skipped. QEMU Guest Agent is not connected for VM '{{ vm_name }}'.
+          {% endif %}

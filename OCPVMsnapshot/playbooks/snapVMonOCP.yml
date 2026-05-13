@@ -1,0 +1,37 @@
+---
+- name: Create snapshot of OpenShift VM
+  hosts: localhost
+  gather_facts: false
+  vars:
+    api_server: "server:6443"
+    api_token: ""
+    namespace: "2"
+    vm_name: "server"
+    snapshot_name: "{{ vm_name }}-snapshot-{{ lookup('pipe', 'date +%Y%m%d-%H%M%S') }}"
+
+  tasks:
+    - name: Create VM snapshot
+      ansible.builtin.uri:
+        url: "{{ api_server }}/apis/snapshot.kubevirt.io/v1alpha1/namespaces/{{ namespace }}/virtualmachinesnapshots"
+        method: POST
+        headers:
+          Authorization: "Bearer {{ api_token }}"
+          Content-Type: "application/json"
+          Accept: "application/json"
+        body_format: json
+        body:
+          apiVersion: snapshot.kubevirt.io/v1alpha1
+          kind: VirtualMachineSnapshot
+          metadata:
+            name: "{{ snapshot_name }}"
+          spec:
+            source:
+              apiGroup: kubevirt.io
+              kind: VirtualMachine
+              name: "{{ vm_name }}"
+        status_code: 201
+      register: snapshot_response
+
+    - name: Show snapshot creation result
+      ansible.builtin.debug:
+        var: snapshot_response.json

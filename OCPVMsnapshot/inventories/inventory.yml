@@ -1,0 +1,6 @@
+all:
+ hosts:
+   ocp-cluster:
+     api_server: "server:6443"
+     api_token:  "token"
+

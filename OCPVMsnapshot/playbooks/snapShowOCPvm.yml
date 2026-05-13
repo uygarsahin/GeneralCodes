@@ -1,0 +1,40 @@
+---
+- name: List existing VM snapshots in OpenShift
+  hosts: localhost
+  gather_facts: false
+  vars:
+    api_server: "server:6443"
+    api_token: ""
+    namespace: "2"
+
+  tasks:
+#    - name: Get list of VM snapshots
+#      ansible.builtin.uri:
+#        url: "{{ api_server }}/apis/snapshot.kubevirt.io/v1alpha1/namespaces/{{ namespace }}/virtualmachinesnapshots"
+#        method: GET
+#        headers:
+#          Authorization: "Bearer {{ api_token }}"
+#          Accept: "application/json"
+#        return_content: true
+#        status_code: 200
+#      register: snapshot_list
+#
+#    - name: Show snapshot names
+#      ansible.builtin.debug:
+#        msg: "{{ snapshot_list.json['items'] | map(attribute='metadata.name') | list }}"
+    - name: Get all VirtualMachineSnapshots in the namespace
+      kubernetes.core.k8s_info:
+        host: "{{ api_server }}"
+        api_key: "{{ api_token }}"
+        api_version: snapshot.kubevirt.io/v1alpha1
+        kind: VirtualMachineSnapshot
+        namespace: "{{ vm_namespace }}"
+        validate_certs: false
+      register: snapshot_list
+
+    - name: Show snapshot names
+      ansible.builtin.debug:
+      #   msg: "{{ item.metadata.name }} : {{ item.metadata.creationTimestamp }}"
+      # loop: "{{ snapshot_list.resources }}"
+      #  msg: "{{ snapshot_list.resources[0].metadata.name }}"
+        msg: "{{ snapshot_list.resources | map(attribute='metadata.name') | list }}"
