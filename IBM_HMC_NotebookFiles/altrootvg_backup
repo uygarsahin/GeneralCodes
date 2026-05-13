@@ -1,0 +1,4 @@
+2. Rootvg Backup before XP8 softaware
+	2.1 alt_disk_install -X
+	2.2 alt_disk_copy -P all -B -d hdiskXX   
+2.3 ls -al /dev |grep alt 
