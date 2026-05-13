@@ -1,0 +1,49 @@
+---
+
+- name: VC_OPS | Process vCenter {{ vc_item.key }}
+  block:
+    - name: VC_OPS | INIT | Reset per-vCenter results
+      set_fact:
+        vc_results: {}
+
+    - name: VC_OPS | Set context for {{ current_vcenter }}
+      ansible.builtin.set_fact:
+        current_vcenter: "{{ csv_vc_item.key }}"
+        csv_vm_list: "{{ csv_vc_item.value }}"
+
+#    - name: VC_OPS | DEBUG | {{ current_vcenter }}
+#      ansible.builtin.debug:
+#        msg: "Processing {{ current_vcenter }} → {{ vm_list | length }} VMs"
+
+    - name: VC_OPS | CHECK | Connectivity
+      community.vmware.vmware_about_info:
+        hostname: "{{ current_vcenter }}"
+        username: "{{ vcenter_username }}"
+        password: "{{ vcenter_password }}"
+        validate_certs: "{{ validate_certs | bool }}"
+      delegate_to: localhost
+      register: vc_about
+      no_log: false
+
+    - name: VC_OPS | POWER OFF | Process VMs for {{ current_vcenter }}
+      ansible.builtin.include_tasks: "{{ playbook_dir }}/tasks/vm_ops.yml"
+      loop: "{{ csv_vm_list }}"
+      loop_control:
+        loop_var: csv_vm_item
+
+    - name: VC_OPS | FINAL | Merge results
+      set_fact:
+        final_results: >-
+          {{
+            final_results | default({})
+            | combine({ current_vcenter: vc_results })
+          }}
+  rescue:
+    - name: VC_OPS | ERROR | vCenter failed
+      ansible.builtin.debug:
+        msg: "vCenter {{ current_vcenter }} failed"
+
+  always:
+    - name: VC_OPS | DONE
+      ansible.builtin.debug:
+        msg: "Finished {{ current_vcenter }}"

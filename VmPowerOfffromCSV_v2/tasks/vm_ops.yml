@@ -1,0 +1,167 @@
+---
+- name: VM_OPS | Initialize defaults
+  ansible.builtin.set_fact:
+    vc_current_power_state: "unknown"
+    vc_name: "unknown"
+    vm_power_result: {}
+    vm_validate: {}
+    vc_vm_info: {}
+
+- name: VM_OPS | Get VM Search "{{ csv_vm_item.vm_name}}"
+  community.vmware.vmware_guest_info:
+    hostname: "{{ current_vcenter }}"
+    username: "{{ vcenter_username }}"
+    password: "{{ vcenter_password }}"
+    validate_certs: false
+    datacenter: "{{ item.name }}"
+    use_instance_uuid: true
+    uuid: "{{ csv_vm_item.vm_id }}"
+  delegate_to: localhost
+  loop: "{{ dc_info.datacenter_info }}"
+  register: vm_search
+  ignore_errors: true
+  no_log: false
+
+- name: VM_OPS | Extract valid VM result "{{ csv_vm_item.vm_name}}" 
+  ansible.builtin.set_fact:
+#    valid_vm: "{{ (vm_search.results | selectattr('failed', 'equalto', false) | list | first ) | default({})} }"
+    valid_vm: "{{ (vm_search.results | default([]) | selectattr('failed', 'equalto', false) | list | first) | default({}) }}"
+
+- name: VM_OPS | Set datacenter "{{ csv_vm_item.vm_name}}"
+  ansible.builtin.set_fact:
+    vm_datacenter: "{{ valid_vm.item.name }}"
+  when: 
+    - valid_vm is defined
+    - valid_vm != {}
+    - valid_vm.item is defined
+
+
+- name: VM_OPS | Get VM info "{{ csv_vm_item.vm_name}}"
+  community.vmware.vmware_guest_info:
+    hostname: "{{ current_vcenter }}"
+    username: "{{ vcenter_username }}"
+    password: "{{ vcenter_password }}"
+    datacenter: "{{ vm_datacenter }}"
+    validate_certs: false
+    use_instance_uuid: true
+    uuid: "{{ csv_vm_item.vm_id }}"
+  delegate_to: localhost
+  register: vc_vm_info
+  ignore_errors: true
+  no_log: false
+
+#- name: VM_OPS | DEBUG | Normalize states on Vcenter "{{ csv_vm_item.vm_name}}"
+#  ansible.builtin.debug:
+#    msg: "{{ vc_vm_info }}"
+
+- name: VM_OPS | Normalize states on Vcenter "{{ csv_vm_item.vm_name}}"
+  ansible.builtin.set_fact:
+    vc_current_power_state: "{{ vc_vm_info.instance.hw_power_status | default('unknown') | lower | trim }}"
+    vc_name: "{{ vc_vm_info.instance.hw_name | map ('urldecode') | trim | default('unknown') }}"
+  when: vc_vm_info is not failed
+
+- name: VM_OPS | Normalize states on CSV
+  ansible.builtin.set_fact:
+    csv_power_state: "{{ csv_vm_item.vm_power | default('unknown') | lower | trim }}"
+    csv_vm_name: "{{ csv_vm_item.vm_name | default('unknown') | trim }}"
+
+- name: VM_OPS | Power off VM "{{ csv_vm_item.vm_name}}"
+  community.vmware.vmware_guest_powerstate:
+    hostname: "{{ current_vcenter }}"
+    username: "{{ vcenter_username }}"
+    password: "{{ vcenter_password }}"
+    validate_certs: false
+    uuid: "{{ csv_vm_item.vm_id }}"
+    use_instance_uuid: true
+    datacenter: "{{ vm_datacenter }}"
+    state: powered-off
+  delegate_to: localhost
+  register: vm_power_result
+  when:
+    - vc_vm_info is not failed
+    - csv_power_state in ['on','poweredon']
+    - vc_current_power_state == 'poweredon'
+  ignore_errors: true
+  no_log: false
+
+- name: VM_OPS | Validate poweroff "{{ csv_vm_item.vm_name}}"
+  community.vmware.vmware_guest_info:
+    hostname: "{{ current_vcenter }}"
+    username: "{{ vcenter_username }}"
+    password: "{{ vcenter_password }}"
+    datacenter: "{{ vm_datacenter }}"
+    validate_certs: false
+    use_instance_uuid: true
+    uuid: "{{ csv_vm_item.vm_id }}"
+  delegate_to: localhost
+  register: vm_validate
+  until: >
+    vm_validate is not failed and
+    vm_validate.instance is defined and
+    vm_validate.instance.hw_power_status == "poweredOff"
+  retries: 30
+  delay: 5
+  when:
+    - vc_vm_info is not failed
+    - csv_power_state in ['on','poweredon']
+    - vc_current_power_state == 'poweredon'
+  ignore_errors: true
+  no_log: false
+
+- name: VM_OPS | Store result "{{ csv_vm_item.vm_name}}"
+  ansible.builtin.set_fact:
+    vc_results: >-
+      {{
+        vc_results | default({}) |
+        combine({
+
+          csv_vm_name: {
+
+            'vm_name': csv_vm_name,
+            'vm_uuid': csv_vm_item.vm_id | default('unknown'),
+            'vcenter': current_vcenter | default('unknown'),
+            'datacenter': vm_datacenter | default('unknown'),
+
+            'status':
+              (
+                (vc_vm_info is defined and vc_vm_info is failed)
+                or
+                (vc_vm_info.msg is defined and 'Unable to gather information' in vc_vm_info.msg)
+              ) | ternary(
+                'failed',
+
+                (
+                  csv_power_state in ['on','poweredon']
+                  and vc_current_power_state == 'poweredon'
+                ) | ternary(
+                    (
+                      (vm_power_result is defined and vm_power_result is failed)
+                      or
+                      (vm_validate is defined and vm_validate is failed)
+                    )
+                    | ternary('failed','poweredoff'),
+
+                    (
+                      csv_power_state in ['on','poweredon']
+                      and vc_current_power_state != 'poweredon'
+                    ) | ternary(
+                        'already_off',
+
+                        (
+                          csv_power_state not in ['on','poweredon']
+                          and vc_current_power_state == 'poweredon'
+                        ) | ternary(
+                            'failed',
+                            'already_off'
+                        )
+                    )
+                )
+              ),
+
+            'csv_state': csv_power_state,
+            'actual_state': vc_current_power_state | default('unknown')
+
+          }
+
+        })
+      }}
