@@ -1,0 +1,6 @@
+sudo chown -R 1000:1000 /home/jzwxfg/Documents/Docker-Files/minio/data
+sudo chmod -R 755 /home/jzwxfg/Documents/Docker-Files/minio/data
+docker volume create --driver local --opt type=none --opt device=/home/jzwxfg/Documents/Docker-Files/minio/data --opt o=bind minio_data
+
+
+first create volume for a any folder want tou store data. then create docker compose.

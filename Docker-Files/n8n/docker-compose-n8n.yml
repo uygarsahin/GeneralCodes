@@ -1,0 +1,38 @@
+
+services:
+  n8n:
+    image: n8nio/n8n:latest
+    restart: always
+    user: "1000:1000"
+    ports:
+      - "8383:8383"
+    environment:
+      - TZ=Europe/Dublin
+      - N8N_BASIC_AUTH_ACTIVE=true
+      - N8N_BASIC_AUTH_USER=deneme
+      - N8N_BASIC_AUTH_PASSWORD=Deneme123!
+      - N8N_SECURE_COOKIE=false
+      - N8N_PORT=8383
+      - N8N_PROTOCOL=http
+      - N8N_LISTEN_ADDRESS=0.0.0.0
+      - N8N_HOST=10.124.74.147
+      - WEBHOOK_URL=http://10.124.74.147:8383
+      - N8N_ENFORCE_SETTINGS_FILE_PERMISSIONS=true
+    volumes:
+      # Named volume: container içi doğru yol
+      #- n8n_data:/home/node/.n8n
+      # Bind mount tercih ederseniz yukarıdakini kaldırıp aşağıdakini kullanın:
+      - /home/jzwxfg/Documents/Docker-Files/n8n/node/.n8n:/home/node/.n8n
+
+    networks:
+      main-net:
+        ipv4_address: 172.21.0.21
+
+volumes:
+  n8n_data:
+
+networks:
+  main-net:
+    external: true
+    # Harici ağı önceden şu şekilde oluşturmuş olmalısınız:
+    # docker network create --driver bridge --subnet 172.21.0.0/16 main-net

@@ -1,0 +1,24 @@
+services:
+  grafana:
+    image: grafana/grafana:latest
+    container_name: grafana
+    ports:
+      - "3000:3000"
+    environment:
+      - GF_SECURITY_ADMIN_USER=admin
+      - GF_SECURITY_ADMIN_PASSWORD=Deneme123!
+      - GF_USERS_ALLOW_SIGN_UP=false
+      - TZ=Europe/Dublin
+    volumes:
+      - grafana_data:/var/lib/grafana
+    networks:
+      main-net:
+        ipv4_address: 172.21.0.20
+    restart: unless-stopped
+
+volumes:
+  grafana_data:
+
+networks:
+  main-net:
+    external: true

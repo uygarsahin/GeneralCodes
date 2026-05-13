@@ -1,0 +1,6 @@
+NAME                STATUS              CONFIG FILES
+grafana             running(1)          /home/jzwxfg/Documents/Docker-Files/grafana/docker-compose-grafana.yml
+minio               running(1)          /home/jzwxfg/Documents/Docker-Files/minio/docker-compose-minio.yml
+n8n                 running(1)          /home/jzwxfg/Documents/Docker-Files/n8n/docker-compose-n8n.yml
+pgadmin4            running(1)          /home/jzwxfg/Documents/Docker-Files/pgadmin4/docker-compose-pgadminv2.yml
+postgresql          running(1)          /home/jzwxfg/Documents/Docker-Files/postgresql/docker-compose-postgresql.yml

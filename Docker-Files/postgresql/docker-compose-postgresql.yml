@@ -1,0 +1,23 @@
+services:
+  postgres:
+    image: postgres
+    container_name: pg-database
+    environment:
+      POSTGRES_USER: admin
+      POSTGRES_PASSWORD: Deneme123!
+      POSTGRES_DB: mydb
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    ports:
+      - "5532:5432"
+    networks:
+      main-net:
+        ipv4_address: 172.21.0.10
+    restart: unless-stopped
+
+volumes:
+  pgdata:
+
+networks:
+  main-net:
+    external: true
