@@ -1,0 +1,49 @@
+
+Command 
+
+lssyscfg -r sys -F name 
+
+lssyscfg -r sys -F name:serial_num 
+
+lssyscfg -m FRAME_NAME -r lpar -F name,state --header 
+
+lsrefcode -r lpar -m FRAME_NAME -n 1 --filter lpar_names=LAPRNAME 
+
+lsnportlogin -mFRAME_NAME --filter "lpar_names=LAPRNAME" -F lpar_name:wwpn 
+
+ 
+
+lsnportlogin -m -FRAME_NAME --filter "lpar_names=LAPRNAME" -F lpar_name:wwpn:wwpn_status:logged_in --header 
+
+lsnportlogin -m FRAME_NAME --filter "lpar_names=LAPRNAME" 
+
+chnportlogin -m FRAME_NAME --id 37 -o login 
+
+chnportlogin -m FRAME_NAME --id 37 -o logout 
+
+lslic -m FRAME_NAME -t syspower 
+
+lshmcfs -F filesystem filesystem_size filesystem_avail temp_files_size --header 
+
+monhmc -r disk -n 0 
+
+chsysstate -m FRAME_NAME -r lpar -o shutdown -n  LAPRNAME 
+
+chsysstate -m FRAME_NAME -r lpar -o on-n  LAPRNAME 
+
+lslic -m FRAME_NAME -F ecnumber activated_level 
+
+lslic -m FRAME_NAME -F curr_spname_primary,curr_spname_secondary 
+
+lslic -m FRAME_NAME -F ecnumber activated_level curr_spname_primary curr_spname_secondar 
+
+lssyscfg -r sys -F name,serial_num,type_model 
+
+ 
+
+ 
+
+ 
+
+ 
+
