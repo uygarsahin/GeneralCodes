@@ -1,0 +1,16 @@
+Python3.13 install Ubuntu
+
+03 July 2025
+09:17
+
+Install:
+	1. sudo add-apt-repository ppa:deadsnakes/ppa
+	2. sudo apt install python3.13-full
+	3. python3.13 --version
+	4. python3.13 -m ensurepip --upgrade
+
+Uninstall:
+For Python 3.13 installed from PPA, open terminal and run command to remove it:
+
+	1. sudo apt remove --autoremove python3.13
+	2. sudo add-apt-repository --remove ppa:deadsnakes/ppa
